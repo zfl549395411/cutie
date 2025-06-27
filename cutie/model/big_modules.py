@@ -81,7 +81,9 @@ class KeyProjection(nn.Module):
     def forward(self, x: torch.Tensor, *, need_s: bool,
                 need_e: bool) -> (torch.Tensor, torch.Tensor, torch.Tensor):
         x = self.pix_feat_proj(x)
+        # 将特征拍平为一维后放大，在后续作为注意力权重的分母，降低特征过强区域注意力，避免噪声
         shrinkage = self.d_proj(x)**2 + 1 if (need_s) else None
+        # 将特征块中响应过低的区域置0，只考虑有一定响应的区域
         selection = torch.sigmoid(self.e_proj(x)) if (need_e) else None
 
         return self.key_proj(x), shrinkage, selection

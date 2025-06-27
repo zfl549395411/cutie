@@ -136,12 +136,14 @@ class MemoryManager:
         for bucket_id, bucket in buckets.items():
             if self.use_long_term and self.long_mem.engaged(bucket_id):
                 # Use long-term memory
+                # 使用长时记忆并且拥有长时记忆就将长时记忆和工作记忆中的信息拼接拼接
                 long_mem_size = self.long_mem.size(bucket_id)
                 memory_key = torch.cat([self.long_mem.key[bucket_id], self.work_mem.key[bucket_id]],
                                        -1)
                 shrinkage = torch.cat(
                     [self.long_mem.shrinkage[bucket_id], self.work_mem.shrinkage[bucket_id]], -1)
-
+                # 相似性度量并获取topk的注意力索引和总权重
+                # memory中每一帧的记忆都是一个B*1*H*W的key_value映射，即一个slot，一共有N帧所以有B*N*H*W，从这H个slot中选出topk个和当前目标query_key最相似的以及每个slot总的注意力权重
                 similarity = get_similarity(memory_key, shrinkage, query_key, selection)
                 affinity, usage = do_softmax(similarity,
                                              top_k=self.top_k,
@@ -151,6 +153,7 @@ class MemoryManager:
                 Record memory usage for working and long-term memory
                 """
                 # ignore the index return for long-term memory
+                # 只记录work_memory的使用情况
                 work_usage = usage[:, long_mem_size:]
                 self.work_mem.update_bucket_usage(bucket_id, work_usage)
 
@@ -172,14 +175,15 @@ class MemoryManager:
                     self.work_mem.update_bucket_usage(bucket_id, usage)
                 else:
                     affinity = do_softmax(similarity, top_k=self.top_k, inplace=True)
-
+            
+            # 分片是为了加速并行
             if self.chunk_size < 1:
                 object_chunks = [bucket]
             else:
                 object_chunks = [
                     bucket[i:i + self.chunk_size] for i in range(0, len(bucket), self.chunk_size)
                 ]
-
+            # 融合sensormemory,历史mask，work_memory视觉特征（slot中的value），object_memory等，并通过transformer进行融合
             for objects in object_chunks:
                 this_sensory = self._get_sensory_by_ids(objects)
                 this_last_mask = self._get_mask_by_ids(last_mask, objects)

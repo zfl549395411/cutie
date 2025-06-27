@@ -22,30 +22,31 @@ class InferenceCore:
                  cfg: DictConfig,
                  *,
                  image_feature_store: ImageFeatureStore = None):
-        self.network = network
+        self.network = network # 基础模型
         self.cfg = cfg
         self.mem_every = cfg.mem_every
         stagger_updates = cfg.stagger_updates
-        self.chunk_size = cfg.chunk_size
-        self.save_aux = cfg.save_aux
+        self.chunk_size = cfg.chunk_size # 一次性处理的帧数
+        self.save_aux = cfg.save_aux # 是否保存辅助信息
         self.max_internal_size = cfg.max_internal_size
         self.flip_aug = cfg.flip_aug
 
         self.curr_ti = -1
-        self.last_mem_ti = 0
+        self.last_mem_ti = 0 # 上一次更新记忆的时间戳
         # at which time indices should we update the sensory memory
+        # 交叉更新
         if stagger_updates >= self.mem_every:
             self.stagger_ti = set(range(1, self.mem_every + 1))
         else:
             self.stagger_ti = set(
                 np.round(np.linspace(1, self.mem_every, stagger_updates)).astype(int))
         self.object_manager = ObjectManager()
-        self.memory = MemoryManager(cfg=cfg, object_manager=self.object_manager)
+        self.memory = MemoryManager(cfg=cfg, object_manager=self.object_manager) # 记忆管理器
 
         if image_feature_store is None:
             self.image_feature_store = ImageFeatureStore(self.network)
         else:
-            self.image_feature_store = image_feature_store
+            self.image_feature_store = image_feature_store # 图像特征存储器
 
         self.last_mask = None
 
@@ -149,7 +150,7 @@ class InferenceCore:
             return torch.zeros((1, key.shape[-2] * 16, key.shape[-1] * 16),
                                device=key.device,
                                dtype=key.dtype)
-
+        # 根据相似性加权融合历史work_memory视觉特征并利用transfoer将object_memory和object_memory深度融合
         memory_readout = self.memory.read(pix_feat, key, selection, self.last_mask, self.network)
         memory_readout = self.object_manager.realize_dict(memory_readout)
         sensory, _, pred_prob_with_bg = self.network.segment(ms_features,
@@ -165,6 +166,7 @@ class InferenceCore:
                                  torch.flip(pred_prob_with_bg[1], dims=[-1])) / 2
         else:
             pred_prob_with_bg = pred_prob_with_bg[0]
+        # 保留最新的sensory_memory
         if update_sensory:
             self.memory.update_sensory(sensory, self.object_manager.all_obj_ids)
         return pred_prob_with_bg
@@ -231,19 +233,25 @@ class InferenceCore:
 
         image, self.pad = pad_divide_by(image, 16)
         image = image.unsqueeze(0)  # add the batch dimension
+        # 翻转增强，如果启用翻转增强，则将输入图像镜像翻转两次
         if self.flip_aug:
             image = torch.cat([image, torch.flip(image, dims=[-1])], dim=0)
 
         # whether to update the working memory
+        # 如果有mask强制更新，否则5帧强制更新一次
         is_mem_frame = ((self.curr_ti - self.last_mem_ti >= self.mem_every) or
                         (mask is not None)) and (not end)
         # segment when there is no input mask or when the input mask is incomplete
+        # 如果无mask输入或者存在新的object时触发完整分割
         need_segment = (mask is None) or (self.object_manager.num_obj > 0
                                           and not self.object_manager.has_all(objects))
+        # sensor memory更新节奏，与完整的memory(long memory和pixel memory)分开，避免冲高
         update_sensory = ((self.curr_ti - self.last_mem_ti) in self.stagger_ti) and (not end)
 
         # encoding the image
+        # 全量特征图 全局pix特征
         ms_feat, pix_feat = self.image_feature_store.get_features(self.curr_ti, image)
+        # 注意力机制相关特征 用于相似性度量的key 用于削减注意力峰值的shrinkage 用于低响应mask的selection
         key, shrinkage, selection = self.image_feature_store.get_key(self.curr_ti, image)
 
         # segmentation from memory if needed
