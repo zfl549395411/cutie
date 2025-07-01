@@ -64,10 +64,10 @@ class PixelEncoder(nn.Module):
 class KeyProjection(nn.Module):
     def __init__(self, model_cfg: DictConfig):
         super().__init__()
-        in_dim = model_cfg.pixel_encoder.ms_dims[0]
-        mid_dim = model_cfg.pixel_dim
-        key_dim = model_cfg.key_dim
-
+        in_dim = model_cfg.pixel_encoder.ms_dims[0] # f16 所以是1024
+        mid_dim = model_cfg.pixel_dim # 256
+        key_dim = model_cfg.key_dim # 64
+       
         self.pix_feat_proj = nn.Conv2d(in_dim, mid_dim, kernel_size=1)
         self.key_proj = nn.Conv2d(mid_dim, key_dim, kernel_size=3, padding=1)
         # shrinkage
@@ -276,7 +276,6 @@ class MaskDecoder(nn.Module):
             else:
                 new_sensory = sensory
             fast_path = False
-
         # chunk-by-chunk inference
         all_logits = []
         for i in range(0, num_objects, chunk_size):

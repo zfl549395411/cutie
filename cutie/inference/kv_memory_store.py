@@ -6,7 +6,7 @@ import torch
 def _add_last_dim(dictionary, key, new_value, prepend=False):
     # append/prepend a new value to the last dimension of a tensor in a dictionary
     # if the key does not exist, put the new value in
-    # append by default
+    # append by default 1*c*hw，不断往每个后面添加特征值
     if key in dictionary:
         if prepend:
             dictionary[key] = torch.cat([new_value, dictionary[key]], -1)
@@ -80,6 +80,7 @@ class KeyValueMemoryStore:
         assert as_permanent in ['no', 'first', 'all']
 
         # add the value and create new buckets if necessary
+        # 存储value bucket用于对象管理，每个对象有一个value 单一对象其实不需要这个bucket
         if supposed_bucket_id >= 0:
             enabled_buckets = [supposed_bucket_id]
             bucket_exist = supposed_bucket_id in self.buckets
@@ -125,6 +126,7 @@ class KeyValueMemoryStore:
                 add_as_permanent[bucket_id] = True
             elif as_permanent == 'first':
                 if self.perm_end_pt[bucket_id] == 0:
+                    # 从哪个slot开始是long_term，一个ne就是一个H*W,对于输入480 840 也就是30*54=1620
                     self.perm_end_pt[bucket_id] = ne
                     add_as_permanent[bucket_id] = True
 

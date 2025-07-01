@@ -101,6 +101,7 @@ class InferenceCore:
         else:
             as_permanent = 'first'
 
+        # 每个目标有一个短期的记忆，初始化为0，1*256*H*W
         self.memory.initialize_sensory_if_needed(key, self.object_manager.all_obj_ids)
         msk_value, sensory, obj_value, _ = self.network.encode_mask(
             image,
@@ -151,8 +152,10 @@ class InferenceCore:
                                device=key.device,
                                dtype=key.dtype)
         # 根据相似性加权融合历史work_memory视觉特征并利用transfoer将object_memory和object_memory深度融合
+        # 每个目标都输出自己的memroy_readout，输出是1*256*H*W，其实就是聚合后的特征
         memory_readout = self.memory.read(pix_feat, key, selection, self.last_mask, self.network)
-        memory_readout = self.object_manager.realize_dict(memory_readout)
+        memory_readout = self.object_manager.realize_dict(memory_readout) # 单目标先不导出
+        # 网络输出每个目标的sensory 1*num_object*256*H*W,加背景的概率1*num_object+1*H*W
         sensory, _, pred_prob_with_bg = self.network.segment(ms_features,
                                                              memory_readout,
                                                              self.memory.get_sensory(
@@ -250,8 +253,11 @@ class InferenceCore:
 
         # encoding the image
         # 全量特征图 全局pix特征
+        # 输入为1*3*H*W，输出图像编码的三种下采样特征ms_feat为1*(64*n)*(H/n)*(W/n),n为4 8 16，再对f16卷积通道下采样到指定256
         ms_feat, pix_feat = self.image_feature_store.get_features(self.curr_ti, image)
-        # 注意力机制相关特征 用于相似性度量的key 用于削减注意力峰值的shrinkage 用于低响应mask的selection
+        # 注意力机制相关特征 来自于f16用于相似性度量的key 用于削减注意力峰值的shrinkage 用于低响应mask的selection
+        # key: 1*64*(H/16)*(W/16), shrinkage：拍平了 所以是1*1*(H/16)*(W/16)，selection：每个特征值的mask,1*64*(H/16)*(W/16)
+        # key也是一个全局特征,所以注意力实际上是查询的需要关注的空间
         key, shrinkage, selection = self.image_feature_store.get_key(self.curr_ti, image)
 
         # segmentation from memory if needed
@@ -268,7 +274,7 @@ class InferenceCore:
             # temporary ids -- indicates the position of objects in the tensor
             # (starts with 1 due to the background channel)
             corresponding_tmp_ids, _ = self.object_manager.add_new_objects(objects)
-
+            # 输入必须是16的整数倍
             mask, _ = pad_divide_by(mask, 16)
             if need_segment:
                 # merge predicted mask with the incomplete input mask
@@ -301,12 +307,15 @@ class InferenceCore:
                     return torch.zeros((1, key.shape[-2] * 16, key.shape[-1] * 16),
                                        device=key.device,
                                        dtype=key.dtype)
+                # 输出为len(objects)*H*W的bool掩码
                 mask = torch.stack(
                     [mask == objects[mask_id] for mask_id, _ in enumerate(corresponding_tmp_ids)],
                     dim=0)
+            # 将所有通道不是
+            # 通过这个之后增加一个通道，第一个通道是背景概率，其他通道是对应object的概率（所以需要temp_id，必须按顺序）
             pred_prob_with_bg = aggregate(mask, dim=0)
             pred_prob_with_bg = torch.softmax(pred_prob_with_bg, dim=0)
-
+        # 去除前景通道概率
         self.last_mask = pred_prob_with_bg[1:].unsqueeze(0)
         if self.flip_aug:
             self.last_mask = torch.cat(

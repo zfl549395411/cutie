@@ -29,6 +29,7 @@ class MemoryManager:
         # and is not counted towards max_mem_frames
         # but we want to keep the hyperparameters consistent as before for the same behavior
         if self.use_long_term:
+            # 会比正常要长
             self.max_mem_frames = cfg.long_term.max_mem_frames - 1
             self.min_mem_frames = cfg.long_term.min_mem_frames - 1
             self.num_prototypes = cfg.long_term.num_prototypes
@@ -165,6 +166,7 @@ class MemoryManager:
                 # no long-term memory
                 memory_key = self.work_mem.key[bucket_id]
                 shrinkage = self.work_mem.shrinkage[bucket_id]
+                # 输出的是历史中每个记忆空间和当前的相似度相似度即1*1620*memory_frame*1620
                 similarity = get_similarity(memory_key, shrinkage, query_key, selection)
 
                 if self.use_long_term:
@@ -184,12 +186,16 @@ class MemoryManager:
                     bucket[i:i + self.chunk_size] for i in range(0, len(bucket), self.chunk_size)
                 ]
             # 融合sensormemory,历史mask，work_memory视觉特征（slot中的value），object_memory等，并通过transformer进行融合
+            # 多目标同时进行
             for objects in object_chunks:
                 this_sensory = self._get_sensory_by_ids(objects)
+                # 获取当前目标历史mask
                 this_last_mask = self._get_mask_by_ids(last_mask, objects)
                 this_msk_value = self._get_visual_values_by_ids(objects)  # (1/2)*num_objects*C*N
+                # 利用注意力机制从所有存储中对value进行加权计算，输出1*2*256*特征图宽高 msk_value和拼接次数有关，但这里输出无关
                 visual_readout = self._readout(affinity,
                                                this_msk_value).view(bs, len(objects), self.CV, h, w)
+                # 聚合信息尺度不变
                 pixel_readout = network.pixel_fusion(pix_feat, visual_readout, this_sensory,
                                                      this_last_mask)
                 this_obj_mem = self._get_object_mem_by_ids(objects)
@@ -232,20 +238,26 @@ class MemoryManager:
         self.engaged = True
         if self.H is None or self.config_stale:
             self.config_stale = False
+            # 特征图的宽高，第一次更新
             self.H, self.W = msk_value.shape[-2:]
             self.HW = self.H * self.W
             # convert from num. frames to num. tokens
+            # 最多有4帧memory,每一个slot都存储了整个空间这一纬度的信息，所以最多有4*H*W
             self.max_work_tokens = self.max_mem_frames * self.HW
             if self.use_long_term:
                 self.min_work_tokens = self.min_mem_frames * self.HW
 
         # key:   bs*C*N
         # value: bs*num_objects*C*N
+        # 将其空间纬度拉平
         key = key.flatten(start_dim=2)
         shrinkage = shrinkage.flatten(start_dim=2)
+        # key的特征通道数
         self.CK = key.shape[1]
 
+        # 每个目标空间纬度拍平
         msk_value = msk_value.flatten(start_dim=3)
+        # value的特征通道数
         self.CV = msk_value.shape[2]
 
         if selection is not None:
@@ -265,6 +277,7 @@ class MemoryManager:
                     incoming obj_value is (1/2)*num_objects*num_summaries*(embed_dim+1)
                     self.obj_v[obj] = torch.cat([self.obj_v[obj], obj_value[:, obj_id]], dim=0)
                     """
+                    # 最后一维累加，其他维累加obj_value
                     last_acc = self.obj_v[obj][:, :, -1]
                     new_acc = last_acc + obj_value[:, obj_id, :, -1]
 
@@ -318,6 +331,7 @@ class MemoryManager:
             *self.work_mem.get_all_sliced(bucket_id, 0, -self.min_work_tokens))
 
         # remove consolidated working memory
+        # 删除以后剩下min_work_tokes+1680
         self.work_mem.sieve_by_range(bucket_id,
                                      0,
                                      -self.min_work_tokens,

@@ -8,9 +8,18 @@ from cutie.model.channel_attn import CAResBlock
 def interpolate_groups(g: torch.Tensor, ratio: float, mode: str,
                        align_corners: bool) -> torch.Tensor:
     batch_size, num_objects = g.shape[:2]
+    # g = g.flatten(start_dim=0, end_dim=1)
+    # if ratio == 0.5:
+    #     g = F.avg_pool2d(g, kernel_size=2, stride=2)
+    # elif ratio == 0.25:
+    #     g = F.avg_pool2d(g, kernel_size=4, stride=4)
+    # else:
+    #     # fallback to bilinear interpolation
+    #     out_h, out_w = int(g.shape[2] * ratio), int(g.shape[3] * ratio)
+    #     g = F.interpolate(g, size=(out_h, out_w), mode='bilinear', align_corners=align_corners)
     g = F.interpolate(g.flatten(start_dim=0, end_dim=1),
                       scale_factor=ratio,
-                      mode=mode,
+                      mode='bilinear',
                       align_corners=align_corners)
     g = g.view(batch_size, num_objects, *g.shape[1:])
     return g

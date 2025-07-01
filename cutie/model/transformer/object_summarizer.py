@@ -28,9 +28,9 @@ class ObjectSummarizer(nn.Module):
         super().__init__()
 
         this_cfg = model_cfg.object_summarizer
-        self.value_dim = model_cfg.value_dim
-        self.embed_dim = this_cfg.embed_dim
-        self.num_summaries = this_cfg.num_summaries
+        self.value_dim = model_cfg.value_dim # 256
+        self.embed_dim = this_cfg.embed_dim #256
+        self.num_summaries = this_cfg.num_summaries # 16
         self.add_pe = this_cfg.add_pe
         self.pixel_pe_scale = model_cfg.pixel_pe_scale
         self.pixel_pe_temperature = model_cfg.pixel_pe_temperature

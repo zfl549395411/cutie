@@ -74,7 +74,9 @@ class CUTIE(nn.Module):
             chunk_size: int = -1,
             need_weights: bool = False) -> (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor):
         image = (image - self.pixel_mean) / self.pixel_std
+        # 和mask等大，是一个像素是否属于其他前景目标，一个目标全0
         others = self._get_others(masks)
+        # 输出为1*num_objects*256*H/16*W/16
         mask_value, new_sensory = self.mask_encoder(image,
                                                     ms_features,
                                                     sensory,
@@ -83,6 +85,7 @@ class CUTIE(nn.Module):
                                                     deep_update=deep_update,
                                                     chunk_size=chunk_size)
         if self.object_transformer_enabled:
+            # 目标级别的特征，1*num_objects*16*257 实际上就是对mask_value做了一个非线性加权计算，前8纬代表了目标特征，后8纬代表了背景特征，除了特征图提取的256以外额外拼接了一个面积信息
             object_summaries, object_logits = self.object_summarizer(masks, mask_value,
                                                                      need_weights)
         else:
