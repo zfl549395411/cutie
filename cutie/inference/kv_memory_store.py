@@ -8,6 +8,7 @@ def _add_last_dim(dictionary, key, new_value, prepend=False):
     # if the key does not exist, put the new value in
     # append by default 1*c*hw，不断往每个后面添加特征值
     if key in dictionary:
+        # 新的在前
         if prepend:
             dictionary[key] = torch.cat([new_value, dictionary[key]], -1)
         else:

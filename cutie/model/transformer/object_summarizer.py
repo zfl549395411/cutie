@@ -60,7 +60,7 @@ class ObjectSummarizer(nn.Module):
         # value: B*num_objects*value_dim*H*W
         # -> B*num_objects*H*W*value_dim
         h, w = value.shape[-2:]
-        masks = F.interpolate(masks, size=(h, w), mode='area')
+        masks = F.interpolate(masks, size=(h, w), mode='bilinear')
         masks = masks.unsqueeze(-1)
         inv_masks = 1 - masks
         repeated_masks = torch.cat([

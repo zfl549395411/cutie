@@ -11,6 +11,100 @@ from cutie.inference.inference_core import InferenceCore
 from cutie.utils.get_default_model import get_default_model
 from cutie.model.utils.memory_utils import *
 import torch.fx
+import sys
+
+# 一步推理
+class FullTrackingWrapper(nn.Module):
+    def __init__(self,  inferencecore):
+        super().__init__()
+        self.inferencecore = inferencecore
+
+    def forward(self, image,f16,f8,f4,pix_feat,key,selection, last_mask,
+                mem_key, mem_shrinkage, mem_value,
+                sensory, obj_mem):
+        """
+        image:            1*3*h*w
+        f16:          1*1024*H*W  H=h/16 W=w/16
+        f8:           1*512*(h/8)*(w/8)
+        f4:           1*256*(h/4)*(w/4)
+        pix_feat:     1*256*H*W
+        key:          1*64*H*W
+        shrinkage:    1*1*H*W
+        selection:    1*64*H*W
+        last_mask:        1*1*h*w
+        mem_key:          1*64*(H*W*n) + 1*64*(128*80)
+        mem_shrinkage:    1*1*(H*W*n) + 1*1*(128*80)
+        mem_value:        1*256*(H*W*n) + 1*256*(128*80)
+        sensory:          1*1*256*H*W
+        obj_mem:          1*1*16*257
+        """
+        h, w = pix_feat.shape[-2:]
+        bs = pix_feat.shape[0]
+        # ============ Stage 2: memory 读取 ============
+        similarity = get_similarity(mem_key, mem_shrinkage, key, selection, add_batch_dim=False)
+
+        affinity, usage = do_softmax(similarity,
+                                     top_k=self.inferencecore.memory.top_k,
+                                     inplace=False,
+                                     return_usage=True)
+
+        visual_readout = self.inferencecore.memory._readout(affinity, mem_value)
+        visual_readout=visual_readout.view(bs, 1, 256, h, w)
+
+        pixel_readout = self.inferencecore.network.pixel_fusion(
+            pix_feat, visual_readout, sensory, last_mask
+        )
+
+        obj_mem = obj_mem.unsqueeze(2)
+
+        readout_memory, _ = self.inferencecore.network.readout_query(pixel_readout, obj_mem)
+
+        # ============ Stage 3: segment ============
+        ms_image_feat = [f16, f8, f4]
+        sensory, _, pred_prob_with_bg = self.inferencecore.network.segment(
+            ms_image_feat,
+            readout_memory,
+            sensory,
+            chunk_size=-1,
+            update_sensory=True
+        )
+        # 去掉batch获取带背景概率
+        pred_prob_with_bg = pred_prob_with_bg[0]
+        # 去除背景增加batch
+        net_mask = pred_prob_with_bg[1:].unsqueeze(0)
+        # 得到每个像素的分割mask
+        mask = torch.argmax(pred_prob_with_bg, dim=0)
+
+        # 找到每个像素的最大值（概率）
+        max_prob = torch.max(pred_prob_with_bg, dim=0).values  # shape: [H, W]
+
+        # 对低于阈值的区域将 mask 置为 0
+        mask[max_prob < 0.1] = 0
+
+
+        # ============ Stage 4: encode mask ============
+        msk_value, sensory, obj_value, _ = self.inferencecore.network.encode_mask(
+            image,
+            pix_feat,
+            sensory,
+            net_mask,
+            chunk_size=-1,
+            need_weights=False
+        )
+
+        # ============ Final return ============
+        return (
+            msk_value, # 注意力机制四元素
+            obj_value, # 目标级特征
+            sensory,   # 图像感知特征
+            mask,      # 像素类别mask
+            net_mask,  # 概率
+            usage,     # 注意力字典使用情况 
+            pixel_readout,
+            similarity,
+            readout_memory,
+
+        )
 
 class ImageEncoderONNXWrapper(nn.Module):
     def __init__(self, network):
@@ -44,10 +138,10 @@ class ReadMemoryONNXWrapper(nn.Module):
         # pix_feat:         1*256*H*W
         # key:              1*64*H*W
         # selection:        1*64*H*W
-        # lask_mask:        1*1*H*W
-        # mem_key:          worK:1*64*(H*W*10)+long:1*64*(128*9)
-        # mem_shrinkage:    work:1*1*(H*W*10)+LONG:1*1*(128*9)
-        # mem_value:        work:1*256*(H*W*10)+LONG:1*256*(128*9)
+        # lask_mask:        1*1*h*w
+        # mem_key:          worK:1*64*(H*W*10)+long:1*64*(128*80)
+        # mem_shrinkage:    work:1*1*(H*W*10)+LONG:1*1*(128*80)
+        # mem_value:        work:1*256*(H*W*10)+LONG:1*256*(128*80)
         # sensory:          1*1*256*H*W
         # obj_mem:          1*1*16*257
 
@@ -66,7 +160,8 @@ class ReadMemoryONNXWrapper(nn.Module):
 
         # 读取 memory 特征
         visual_readout = self.InferenceCore.memory._readout(
-            affinity, mem_value).view(bs, 1, 256, h, w)
+            affinity, mem_value)
+        visual_readout=visual_readout.view(bs, 1, 256, h, w)
 
         # 融合像素特征
         pixel_readout = self.InferenceCore.network.pixel_fusion(
@@ -97,10 +192,17 @@ class SegMentONNXWrapper(nn.Module):
         # sensory:          1*1*256*H*W
         ms_image_feat=[f16,f8,f4]
         sensory, _, pred_prob_with_bg = self.InferenceCore.network.segment(ms_image_feat,readout_memory,sensory,chunk_size=-1,update_sensory=True)
-        mask = pred_prob_with_bg[1:].unsqueeze(0)
-        # sensory:          1*1*256
-        # mask:             1*1*h*w
-        return sensory,mask
+        # 去掉batch维度
+        pred_prob_with_bg = pred_prob_with_bg[0]
+        # 去除背景增加batch
+        net_mask = pred_prob_with_bg[1:].unsqueeze(0)
+        # 取最大通道值用于分割
+        mask = torch.argmax(pred_prob_with_bg, dim=0)
+        # sensory:              1*1*256*H*W
+        # net_mask:             1*1*h*w
+        # pred_prob_with_bg:    2*h*w
+        # mask:                 h*w
+        return sensory,net_mask,pred_prob_with_bg,mask
 
 class EncodeMaskWrapper(nn.Module):
     def __init__(self, inferencecore):
@@ -142,7 +244,72 @@ class CompressMemWrapper(nn.Module):
         return prototype_key, prototype_value,prototype_shrinkage
         
 
+def ExportFullStageOnnx(image_height,image_width):
+    # 创建模型
+    device = torch.device('cuda')
 
+    # 创建模型并移动到 device
+    cutie = get_default_model().to(device)
+    for param in cutie.parameters():
+        param.requires_grad = False
+    cutie.eval()
+    processor = InferenceCore(cutie, cfg=cutie.cfg)
+
+    wrapper = FullTrackingWrapper(processor)
+    wrapper.eval()
+
+    H=image_height//16
+    W=image_width//16
+    work_len = H * W * 10
+    long_len = 128 * 80
+    mem_total_len = work_len + long_len
+
+    image=torch.randn(1, 3, image_height,image_width,device=device)
+    last_mask = torch.randn(1, 1, image_height, image_width, device=device)           # 上一帧的 mask
+    mem_key = torch.randn(1, 64, mem_total_len, device=device)        # memory key
+    mem_shrinkage = torch.randn(1, 1, mem_total_len, device=device)   # shrinkage
+    mem_value = torch.randn(1, 256, mem_total_len, device=device)     # value
+    sensory = torch.randn(1, 1, 256, H, W, device=device)              # sensory (全局引导)
+    obj_mem = torch.randn(1, 1, 16, 257, device=device)                # object memory (历史)
+    f16 = torch.randn(1, 1024, H, W).to(device)
+    f8  = torch.randn(1, 512, H * 2, W * 2).to(device)
+    f4  = torch.randn(1, 256,  H * 4, W * 4).to(device)
+    pix_feat = torch.randn(1, 256, H, W, device=device)         # 输入像素特征
+    key = torch.randn(1, 64, H, W, device=device)                # key
+    selection = torch.randn(1, 64, H, W, device=device)          # selection mask
+
+    dummy_inputs = (
+        image,f16,f8,f4,pix_feat,key,selection, last_mask, mem_key, mem_shrinkage,
+        mem_value, sensory, obj_mem
+    )
+
+    output_names = [
+        "msk_value", "obj_value", "sensory_out",
+        "mask","net_mask", "usage","pixel_readout",
+            "similarity",
+            "readout_memory",
+    ]
+
+    input_names = [
+        "image","f16","f8","f4","pix_feat","key","selection", "last_mask",
+        "mem_key", "mem_shrinkage", "mem_value",
+        "sensory", "obj_mem"
+    ]
+    
+    torch.onnx.export(
+        wrapper,
+        dummy_inputs,
+        "./onnx/full_tracking_debug.onnx",
+        verbose=False,  # 开启详细日志
+        do_constant_folding=True ,
+        export_params=True,
+        opset_version=13,
+        input_names=input_names,
+        output_names=output_names,
+        dynamic_axes=None
+    )
+
+    
 
 def ExportEncoderOnnx(image_height,image_width):
     # 创建模型
@@ -184,10 +351,10 @@ def ExportReadMemoryOnnx(image_height,image_width):
     pix_feat = torch.randn(1, 256, H, W, device=device)         # 输入像素特征
     key = torch.randn(1, 64, H, W, device=device)                # key
     selection = torch.randn(1, 64, H, W, device=device)          # selection mask
-    last_mask = torch.randn(1, 1, H, W, device=device)           # 上一帧的 mask
+    last_mask = torch.randn(1, 1, image_height, image_width, device=device)           # 上一帧的 mask
 
     work_len = H * W * 10
-    long_len = 128 * 9
+    long_len = 128 * 80
     mem_total_len = work_len + long_len
 
     mem_key = torch.randn(1, 64, mem_total_len, device=device)        # memory key
@@ -251,7 +418,7 @@ def ExportSegmentOnnx(image_height, image_width):
         (dummy_f16, dummy_f8, dummy_f4, dummy_readout, dummy_sensory),
         "./onnx/segment.onnx",
         input_names=["f16", "f8", "f4", "readout_memory", "sensory"],
-        output_names=["sensory_out", "mask"],
+        output_names=["sensory_out", "net_mask","pred_prob_with_bg","mask"],
         export_params=True,
         opset_version=13,  # 推荐 >=13，支持更多算子如 `einsum`
         do_constant_folding=True,
@@ -283,6 +450,7 @@ def ExportEncodeMaskOnnx(image_height, image_width):
         wrapper,
         (dummy_image, dummy_pix_feat, dummy_sensory, dummy_prob),
         "./onnx/encode_mask.onnx",
+        verbose=False,  # 开启详细日志
         input_names=["image", "pix_feat", "sensory", "prob"],
         output_names=["msk_value", "sensory_out", "obj_value"],
         opset_version=13,
@@ -334,7 +502,11 @@ def ExportCompressMemOnnx(image_height, image_width):
     )
 
 # try:
-ExportCompressMemOnnx(image_height,image_width)
+# ExportEncoderOnnx(image_height, image_width)
+# ExportEncodeMaskOnnx(image_height,image_width)
+ExportFullStageOnnx(image_height,image_width)
+
+# ExportReadMemoryOnnx(image_height,image_width)
 # except Exception as e:
 #     with open("error_log.txt", "w") as f:
 #         import traceback

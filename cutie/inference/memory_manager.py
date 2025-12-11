@@ -172,7 +172,7 @@ class MemoryManager:
                 if self.use_long_term:
                     affinity, usage = do_softmax(similarity,
                                                  top_k=self.top_k,
-                                                 inplace=True,
+                                                 inplace=False,
                                                  return_usage=True)
                     self.work_mem.update_bucket_usage(bucket_id, usage)
                 else:

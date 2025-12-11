@@ -14,7 +14,7 @@ def get_similarity(mk: torch.Tensor,
     # ms: B x  1 x [N]    - Memory shrinkage
     # qk: B x CK x [HW/P] - Query keys
     # qe: B x CK x [HW/P] - Query selection
-    # Dimensions in [] are flattened
+    # Dimensions in [] are flattened    
     if add_batch_dim:
         mk, ms = mk.unsqueeze(0), ms.unsqueeze(0)
         qk, qe = qk.unsqueeze(0), qe.unsqueeze(0)
@@ -42,7 +42,9 @@ def get_similarity(mk: torch.Tensor,
         similarity = similarity * ms / math.sqrt(CK)  # B*N*HW
     else:
         similarity = similarity / math.sqrt(CK)  # B*N*HW
-
+    mask = (mk.abs().sum(dim=2) == 0)  # B x N, True 表示 padding（全0）的位置
+    mask = mask.unsqueeze(2)            # B x N x 1，方便广播
+    similarity = similarity.masked_fill(mask, float('-1e4'))
     return similarity
 
 
