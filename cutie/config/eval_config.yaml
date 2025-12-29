@@ -30,10 +30,10 @@ size: null
 save_all: null
 use_all_masks: null
 use_long_term: null
-mem_every: null
+mem_every: 4 # for resnet18
 
 # only relevant when long_term is not enabled
-max_mem_frames: 5
+max_mem_frames: 4 # for resnet18
 
 # only relevant when long_term is enabled
 long_term:
@@ -41,7 +41,7 @@ long_term:
   max_mem_frames: 10
   min_mem_frames: 5
   num_prototypes: 128
-  max_num_tokens: 10000
+  max_num_tokens: 2500 # 10000
   buffer_tokens: 2000
 
 top_k: 30

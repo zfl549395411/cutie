@@ -200,6 +200,21 @@ class QueryTransformer(nn.Module):
 
         aux_mask = torch.cat([aux_foreground_mask, aux_background_mask], dim=1)
 
-        aux_mask[torch.where(aux_mask.sum(-1) == aux_mask.shape[-1])] = False
+        # for rk3588
+         # 1. 生成固定形状的无效行掩码
+        invalid_rows = (aux_mask.sum(dim=-1) == aux_mask.shape[-1])
+        # 2. 广播到aux_mask完整形状
+        invalid_mask = invalid_rows.unsqueeze(-1).expand(aux_mask.shape)
+        # 3. 静态赋值，避免动态索引
+        # aux_mask = torch.where(invalid_mask, torch.tensor(False, device=aux_mask.device), aux_mask) error
+        aux_mask_float = aux_mask.float()
+        invalid_mask_float = invalid_mask.float()
+        # 步骤2：用乘法替代 Where（1 - invalid_mask_float：True→0.0，False→1.0）
+        aux_mask_float = aux_mask_float * (1 - invalid_mask_float)
+        # 步骤3：转回bool
+        aux_mask = aux_mask_float.bool()
+
+        # original code
+        # aux_mask[torch.where(aux_mask.sum(-1) == aux_mask.shape[-1])] = False
 
         return aux_mask

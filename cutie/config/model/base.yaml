@@ -7,9 +7,13 @@ value_dim: 256
 sensory_dim: 256
 embed_dim: 256
 
+
 pixel_encoder:
-  type: resnet50
-  ms_dims: [1024, 512, 256]
+  type: resnet18
+  ms_dims: [256, 128, 64]
+# pixel_encoder:
+#   type: resnet50
+#   ms_dims: [1024, 512, 256]
 
 mask_encoder:
   type: resnet18

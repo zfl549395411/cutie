@@ -74,8 +74,8 @@ class ObjectSummarizer(nn.Module):
         if self.add_pe:
             pe = self.pos_enc(value)
             value = value + pe
-
-        with torch.cuda.amp.autocast(enabled=False):
+        if True:
+        # with torch.cuda.amp.autocast(enabled=False):
             value = value.float()
             feature = self.feature_pred(value)
             logits = self.weights_pred(value)

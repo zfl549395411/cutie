@@ -57,15 +57,24 @@ def do_softmax(
     # similarity: B x N x [HW/P]
     # use inplace with care
     if top_k is not None:
-        values, indices = torch.topk(similarity, k=top_k, dim=1)
+        
+        # values, indices = torch.topk(similarity, k=top_k, dim=1)
+        affinity = similarity.exp_()
+        affinity /= torch.sum(affinity, dim=1, keepdim=True) 
+        # # print(affinity.shape)
 
-        x_exp = values.exp_()
-        x_exp /= torch.sum(x_exp, dim=1, keepdim=True)
-        if inplace:
-            similarity.zero_().scatter_(1, indices, x_exp)  # B*N*HW
-            affinity = similarity
-        else:
-            affinity = torch.zeros_like(similarity).scatter_(1, indices, x_exp)  # B*N*HW
+        # x_exp = values.exp_()
+        # x_exp /= torch.sum(x_exp, dim=1, keepdim=True)
+        # if inplace:
+        #     similarity.zero_().scatter_(1, indices, x_exp)  # B*N*HW
+        #     affinity = similarity
+        # else:
+        #     affinity = torch.zeros_like(similarity)
+        #     batch_idx = torch.arange(affinity.shape[0], device=affinity.device)[:, None, None]
+        #     d2_idx = torch.arange(affinity.shape[2], device=affinity.device)[None, None, :]
+        #     affinity[batch_idx, indices, d2_idx] = x_exp
+        #     affinity = affinity.contiguous()
+            # affinity = torch.zeros_like(similarity).scatter_(1, indices, x_exp)  # B*N*HW
     else:
         maxes = torch.max(similarity, dim=1, keepdim=True)[0]
         x_exp = torch.exp(similarity - maxes)

@@ -24,6 +24,8 @@ class MemoryManager:
         self.save_aux = cfg.save_aux
 
         self.use_long_term = cfg.use_long_term
+        # print(cfg.use_long_term)
+        # breakpoint()
         self.count_long_term_usage = cfg.long_term.count_usage
         # subtract 1 because the first-frame is now counted as "permanent memory"
         # and is not counted towards max_mem_frames
@@ -76,16 +78,26 @@ class MemoryManager:
             self.max_mem_frames = cfg.max_mem_frames - 1
 
     def _readout(self, affinity, v) -> torch.Tensor:
-        # affinity: bs*N*HW
+        # affinity: bs*N*HW 
         # v: bs*C*N or bs*num_objects*C*N
         # returns bs*C*HW or bs*num_objects*C*HW
         if len(v.shape) == 3:
+            
             # single object
-            return v @ affinity
+            v = v.contiguous().cpu()
+            affinity = affinity.contiguous().cpu()
+            # bmm 要求输入为 3D 张量（B,M,K）×（B,K,N），和你的维度完全匹配
+            result = torch.bmm(v, affinity)
+            # return v @ affinity
+            
+            return result.cuda()
         else:
-            bs, num_objects, C, N = v.shape
-            v = v.view(bs, num_objects * C, N)
-            out = v @ affinity
+            bs, num_objects, C, N = v.shape # torch.Size([1, 1, 256, 620])
+            v = v.view(bs, num_objects * C, N) # torch.Size([1, 256, 620])
+            
+            # out = torch.bmm(v, affinity)
+            out = v @ affinity  # affinity 由620->1240->1860->2480 mem_max = 4 # out.shape=torch.Size([1, 256, 620])
+            
             return out.view(bs, num_objects, C, -1)
 
     def _get_mask_by_ids(self, mask: torch.Tensor, obj_ids: List[int]) -> torch.Tensor:

@@ -10,7 +10,7 @@ from cutie.utils.get_default_model import get_default_model
 
 
 @torch.inference_mode()
-@torch.cuda.amp.autocast()
+# @torch.cuda.amp.autocast()
 def main():
     # obtain the Cutie model with default parameters -- skipping hydra configuration
     cutie = get_default_model()

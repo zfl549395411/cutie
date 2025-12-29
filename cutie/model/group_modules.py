@@ -82,7 +82,6 @@ class MainToGroupDistributor(nn.Module):
 
     def forward(self, x: torch.Tensor, g: torch.Tensor, skip_expand: bool = False) -> torch.Tensor:
         num_objects = g.shape[1]
-
         if self.x_transform is not None:
             x = self.x_transform(x)
 

@@ -8,7 +8,7 @@ import torch.nn.functional as F
 from cutie.utils.palette import davis_palette
 
 
-def image_to_torch(frame: np.ndarray, device: str = 'cuda'):
+def image_to_torch(frame: np.ndarray, device: str = 'cpu'):
     # frame: H*W*3 numpy array
     frame = frame.transpose(2, 0, 1)
     frame = torch.from_numpy(frame).float().to(device, non_blocking=True) / 255
@@ -31,7 +31,7 @@ Some constants fro visualization
 """
 try:
     if torch.cuda.is_available():
-        device = torch.device("cuda")
+        device = torch.device("cpu")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
     else:

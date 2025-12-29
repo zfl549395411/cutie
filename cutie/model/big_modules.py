@@ -263,8 +263,10 @@ class MaskDecoder(nn.Module):
                 *,
                 chunk_size: int = -1,
                 update_sensory: bool = True) -> (torch.Tensor, torch.Tensor):
+        # memory_readout = memory_readout.unsqueeze(0)
 
         batch_size, num_objects = memory_readout.shape[:2]
+        
         f8, f4 = self.decoder_feat_proc(ms_image_feat[1:])
         if chunk_size < 1 or chunk_size >= num_objects:
             chunk_size = num_objects

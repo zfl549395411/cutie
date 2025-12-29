@@ -59,8 +59,10 @@ class CUTIE(nn.Module):
         return others
 
     def encode_image(self, image: torch.Tensor) -> (Iterable[torch.Tensor], torch.Tensor):
+        
         image = (image - self.pixel_mean) / self.pixel_std
         ms_image_feat = self.pixel_encoder(image)
+       
         return ms_image_feat, self.pix_feat_proj(ms_image_feat[0])
 
     def encode_mask(
@@ -119,7 +121,8 @@ class CUTIE(nn.Module):
         batch_size, num_objects = msk_value.shape[:2]
 
         # read using visual attention
-        with torch.cuda.amp.autocast(enabled=False):
+        # with torch.cuda.amp.autocast(enabled=False):
+        if True:
             affinity = get_affinity(memory_key.float(), memory_shrinkage.float(), query_key.float(),
                                     query_selection.float())
 
@@ -149,7 +152,8 @@ class CUTIE(nn.Module):
                      last_mask: torch.Tensor,
                      *,
                      chunk_size: int = -1) -> torch.Tensor:
-        last_mask = F.interpolate(last_mask, size=sensory.shape[-2:], mode='area')
+        # last_mask = F.interpolate(last_mask, size=sensory.shape[-2:], mode='area')
+        last_mask = F.interpolate(last_mask, size=sensory.shape[-2:], mode='bilinear')
         last_others = self._get_others(last_mask)
         fused = self.pixel_fuser(pix_feat,
                                  pixel,

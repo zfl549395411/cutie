@@ -210,30 +210,30 @@ class InferenceCore:
 
         # resize input if needed -- currently only used for the GUI
         resize_needed = False
-        if self.max_internal_size > 0:
-            h, w = image.shape[-2:]
-            min_side = min(h, w)
-            if min_side > self.max_internal_size:
-                resize_needed = True
-                new_h = int(h / min_side * self.max_internal_size)
-                new_w = int(w / min_side * self.max_internal_size)
-                image = F.interpolate(image.unsqueeze(0),
-                                      size=(new_h, new_w),
-                                      mode='bilinear',
-                                      align_corners=False)[0]
-                if mask is not None:
-                    if idx_mask:
-                        mask = F.interpolate(mask.unsqueeze(0).unsqueeze(0).float(),
-                                             size=(new_h, new_w),
-                                             mode='nearest-exact')[0, 0].round().long()
-                    else:
-                        mask = F.interpolate(mask.unsqueeze(0),
-                                             size=(new_h, new_w),
-                                             mode='bilinear',
-                                             align_corners=False)[0]
+        # if self.max_internal_size > 0:
+        #     h, w = image.shape[-2:]
+        #     min_side = min(h, w)
+        #     if min_side > self.max_internal_size:
+        #         resize_needed = True
+        #         new_h = int(h / min_side * self.max_internal_size)
+        #         new_w = int(w / min_side * self.max_internal_size)
+        #         image = F.interpolate(image.unsqueeze(0),
+        #                               size=(new_h, new_w),
+        #                               mode='bilinear',
+        #                               align_corners=False)[0]
+        #         if mask is not None:
+        #             if idx_mask:
+        #                 mask = F.interpolate(mask.unsqueeze(0).unsqueeze(0).float(),
+        #                                      size=(new_h, new_w),
+        #                                      mode='nearest-exact')[0, 0].round().long()
+        #             else:
+        #                 mask = F.interpolate(mask.unsqueeze(0),
+        #                                      size=(new_h, new_w),
+        #                                      mode='bilinear',
+        #                                      align_corners=False)[0]
 
         self.curr_ti += 1
-
+        
         image, self.pad = pad_divide_by(image, 16)
         image = image.unsqueeze(0)  # add the batch dimension
         # 翻转增强，如果启用翻转增强，则将输入图像镜像翻转两次
@@ -254,11 +254,12 @@ class InferenceCore:
         # encoding the image
         # 全量特征图 全局pix特征
         # 输入为1*3*H*W，输出图像编码的三种下采样特征ms_feat为1*(64*n)*(H/n)*(W/n),n为4 8 16，再对f16卷积通道下采样到指定256
-        ms_feat, pix_feat = self.image_feature_store.get_features(self.curr_ti, image)
+        ms_feat, pix_feat = self.image_feature_store.get_features(self.curr_ti, image) # ms_feat.shape=([1, 256, 20, 31],[1, 128, 40, 62],[1, 64, 80, 124]) pix_feat.shape=[1, 256, 20, 31]
         # 注意力机制相关特征 来自于f16用于相似性度量的key 用于削减注意力峰值的shrinkage 用于低响应mask的selection
         # key: 1*64*(H/16)*(W/16), shrinkage：拍平了 所以是1*1*(H/16)*(W/16)，selection：每个特征值的mask,1*64*(H/16)*(W/16)
         # key也是一个全局特征,所以注意力实际上是查询的需要关注的空间
-        key, shrinkage, selection = self.image_feature_store.get_key(self.curr_ti, image)
+        key, shrinkage, selection = self.image_feature_store.get_key(self.curr_ti, image) # key.shape=[1, 64, 20, 31]  shrinkage.shape=[1, 1, 20, 31] selection.shape=[1, 64, 20, 31]
+       
 
         # segmentation from memory if needed
         if need_segment:

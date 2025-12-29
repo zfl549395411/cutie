@@ -17,11 +17,11 @@ def get_default_model() -> CUTIE:
 
     weight_dir = download_models_if_needed()
     with open_dict(cfg):
-        cfg['weights'] = os.path.join(weight_dir, 'cutie-base-mega.pth')
+        cfg['weights'] = os.path.join(weight_dir, 'cutie-small-mega.pth')
     get_dataset_cfg(cfg)
 
     # Load the network weights
-    cutie = CUTIE(cfg).cuda().eval()
+    cutie = CUTIE(cfg).cpu().eval()
     model_weights = torch.load(cfg.weights)
     cutie.load_weights(model_weights)
 
