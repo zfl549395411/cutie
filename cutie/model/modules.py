@@ -49,22 +49,24 @@ class SensoryUpdater(nn.Module):
         super().__init__()
         self.g16_conv = GConv2d(g_dims[0], mid_dim, kernel_size=1)
         self.g8_conv = GConv2d(g_dims[1], mid_dim, kernel_size=1)
-        self.g4_conv = GConv2d(g_dims[2], mid_dim, kernel_size=1)
+        self.g4_conv = GConv2d(g_dims[2], mid_dim, kernel_size=1) # g_dims[0, 1, 2]=256, 128 , 129 , mid_dim=256
 
-        self.transform = GConv2d(mid_dim + sensory_dim, sensory_dim * 3, kernel_size=3, padding=1)
+        self.transform = GConv2d(mid_dim + sensory_dim, sensory_dim * 3, kernel_size=3, padding=1) # sensory_dim = 256
 
         nn.init.xavier_normal_(self.transform.weight)
+       
 
     def forward(self, g: torch.Tensor, h: torch.Tensor) -> torch.Tensor:
-        g = self.g16_conv(g[0]) + self.g8_conv(downsample_groups(g[1], ratio=1/2)) + \
-            self.g4_conv(downsample_groups(g[2], ratio=1/4))
-
+        # g[0].shape = [1,1,256,20,31], g[1].shape=torch.Size([1, 1, 128, 40, 62]), g[2].shape=torch.Size([1, 1, 129, 80, 124])
+        g_4 = downsample_groups(g[2], ratio=1/2)
+        g = self.g16_conv(g[0]) + self.g8_conv(downsample_groups(g[1], ratio=1/2)) + self.g4_conv(downsample_groups(g_4, ratio=1/2))
+        # g.shape and h.shape =[1,1,256,20,31] 
         with torch.cuda.amp.autocast(enabled=False):
             g = g.float()
             h = h.float()
             values = self.transform(torch.cat([g, h], dim=2))
             new_h = _recurrent_update(h, values)
-
+      
         return new_h
 
 

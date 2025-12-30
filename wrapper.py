@@ -12,8 +12,8 @@ from cutie.utils.get_default_model import get_default_model
 from cutie.model.utils.memory_utils import *
 import torch.fx
 import sys
-image_width=496 # step函数中pad后的维度
-image_height=320
+image_width=480 # step函数中pad后的维度
+image_height=304
 def OnnxSimplify(model_path:str, output_path:str):
     from onnxsim import simplify
     import onnx
@@ -242,7 +242,8 @@ class SegMentONNXWrapper(nn.Module):
         net_mask = pred_prob_with_bg_[1:].unsqueeze(0)
         # 取最大通道值用于分割
         mask = torch.argmax(pred_prob_with_bg_, dim=0, keepdim=True)
-        mask = mask.unsqueeze(0).to(torch.int8)
+        # mask = mask.unsqueeze(0) # for 3588
+        # mask = mask.unsqueeze(0).to(torch.int8) # int8 for rk3588
         # sensory:              1*1*256*H*W
         # net_mask:             1*1*h*w
         # pred_prob_with_bg:    2*h*w
@@ -455,6 +456,7 @@ def ExportSegmentOnnx(image_height, image_width):
         # dummy_readout = torch.randn(1, 256, H, W).to(device) # for rk3588
         # dummy_sensory = torch.randn(1, 256, H, W).to(device) # for rk3588
     elif cutie.cfg.model.pixel_encoder.type == "resnet18":
+        print('yes')
         dummy_f16 = torch.randn(1, 256, H, W).to(device)
         dummy_f8  = torch.randn(1, 128, H * 2, W * 2).to(device)
         dummy_f4  = torch.randn(1, 64,  H * 4, W * 4).to(device)
@@ -560,7 +562,7 @@ def ExportCompressMemOnnx(image_height, image_width):
 # ExportFullStageOnnx(image_height,image_width)
 # ExportCompressMemOnnx(image_height, image_width)
 # ExportReadMemoryOnnx(image_height,image_width)
-ExportSegmentOnnx(image_height, image_width)
+# ExportSegmentOnnx(image_height, image_width)
 # except Exception as e:
 #     with open("error_log.txt", "w") as f:
 #         import traceback
