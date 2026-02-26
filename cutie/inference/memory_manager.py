@@ -145,7 +145,7 @@ class MemoryManager:
         Compute affinity and perform readout
         """
         all_readout_mem = {}
-        buckets = self.work_mem.buckets
+        buckets = self.work_mem.buckets #[0, [255]]
         for bucket_id, bucket in buckets.items():
             if self.use_long_term and self.long_mem.engaged(bucket_id):
                 # Use long-term memory
@@ -176,8 +176,8 @@ class MemoryManager:
                     self.long_mem.update_bucket_usage(bucket_id, long_usage)
             else:
                 # no long-term memory
-                memory_key = self.work_mem.key[bucket_id]
-                shrinkage = self.work_mem.shrinkage[bucket_id]
+                memory_key = self.work_mem.key[bucket_id] # [1, 64, 2280]
+                shrinkage = self.work_mem.shrinkage[bucket_id] # [1, 1, 2280]
                 # 输出的是历史中每个记忆空间和当前的相似度相似度即1*1620*memory_frame*1620
                 similarity = get_similarity(memory_key, shrinkage, query_key, selection)
 
@@ -190,9 +190,10 @@ class MemoryManager:
                 else:
                     affinity = do_softmax(similarity, top_k=self.top_k, inplace=True)
             
+           
             # 分片是为了加速并行
             if self.chunk_size < 1:
-                object_chunks = [bucket]
+                object_chunks = [bucket] # [[255]]
             else:
                 object_chunks = [
                     bucket[i:i + self.chunk_size] for i in range(0, len(bucket), self.chunk_size)

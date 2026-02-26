@@ -12,6 +12,8 @@ from cutie.utils.get_default_model import get_default_model
 from cutie.model.utils.memory_utils import *
 import torch.fx
 import sys
+from onnxsim import simplify
+import onnx
 image_width=480 # step函数中pad后的维度
 image_height=304
 def OnnxSimplify(model_path:str, output_path:str):
@@ -183,8 +185,18 @@ class ReadMemoryONNXWrapper(nn.Module):
         # mem_value:        work:1*256*(H*W*10)+LONG:1*256*(128*80)
         # sensory:          1*1*256*H*W
         # obj_mem:          1*1*16*257
-
-
+        """ 
+        用于3588部署调试
+        # pix_feat = pix_feat.unsqueeze(0)
+        # key = key.unsqueeze(0)
+        # selection = selection.unsqueeze(0)
+        # last_mask = last_mask.unsqueeze(0)
+        # obj_mem = obj_mem.unsqueeze(0) 
+        """
+        pix_feat = pix_feat.unsqueeze(0)
+        key = key.unsqueeze(0)
+        selection = selection.unsqueeze(0)
+        last_mask = last_mask.unsqueeze(0)
         h, w = pix_feat.shape[-2:]
         bs = pix_feat.shape[0]
 
@@ -197,28 +209,38 @@ class ReadMemoryONNXWrapper(nn.Module):
                                      inplace=False,
                                      return_usage=True)
 
-        # 读取 memory 特征
+        # # 读取 memory 特征
         visual_readout = self.InferenceCore.memory._readout(
             affinity, mem_value) # torch.Size([1, 1, 256, 620])
         visual_readout=visual_readout.view(bs, 1, 256, h, w)
         
-        # 融合像素特征
+        # # 融合像素特征
         pixel_readout = self.InferenceCore.network.pixel_fusion(
             pix_feat, visual_readout, sensory, last_mask
         )
-        
+       
+        # pix_feat = pix_feat.unsqueeze(0)
+        # key = key.unsqueeze(0)
+        # selection = selection.unsqueeze(0)
+        # last_mask =last_mask.unsqueeze(0)
+        # mem_key = mem_key.unsqueeze(0)
+        # mem_shrinkage = mem_shrinkage.unsqueeze(0)
+        # mem_value = mem_value.unsqueeze(0)
+        # sensory = sensory.unsqueeze(0)
+       
         # 调整维度，确保 ONNX 支持
-        obj_mem = obj_mem.unsqueeze(2)
-
+        # obj_mem = obj_mem.unsqueeze(2) # origin
+        # obj_mem_2_clone = obj_mem
+        # print(pixel_readout.shape, obj_mem.shape)
         # 最终 memory 读取
         readout_memory, aux_features = self.InferenceCore.network.readout_query(
             pixel_readout, obj_mem
         )
-        
         # readout:          1*1*256*H*W  
         # usage:            H*W*10+128*9
-        # return pixel_readout
-        return readout_memory, usage 
+        # return pix_feat, key, selection, last_mask, mem_key, mem_shrinkage, mem_value, sensory, obj_mem, similarity, affinity, usage, visual_readout, pixel_readout
+        # return usage , pixel_readout, visual_readout, obj_mem
+        return readout_memory, usage
 
 class SegMentONNXWrapper(nn.Module):
     def __init__(self, inferencecore):
@@ -241,7 +263,7 @@ class SegMentONNXWrapper(nn.Module):
         # 去除背景增加batch
         net_mask = pred_prob_with_bg_[1:].unsqueeze(0)
         # 取最大通道值用于分割
-        mask = torch.argmax(pred_prob_with_bg_, dim=0, keepdim=True)
+        mask = torch.argmax(pred_prob_with_bg_, dim=0, keepdim=True).to(torch.float32)
         # mask = mask.unsqueeze(0) # for 3588
         # mask = mask.unsqueeze(0).to(torch.int8) # int8 for rk3588
         # sensory:              1*1*256*H*W
@@ -289,7 +311,6 @@ class CompressMemWrapper(nn.Module):
         # prototype_shrinkage: work:1*1*128
         return prototype_key, prototype_value,prototype_shrinkage
         
-
 def ExportFullStageOnnx(image_height,image_width):
     # 创建模型
     device = torch.device('cuda')
@@ -355,7 +376,6 @@ def ExportFullStageOnnx(image_height,image_width):
         dynamic_axes=None
     )
 
-    
 def ExportEncoderOnnx(image_height,image_width):
     # 创建模型
     device = torch.device('cuda')
@@ -367,18 +387,28 @@ def ExportEncoderOnnx(image_height,image_width):
 
     # 构造示例输入
     dummy_input = torch.randn(1, 3, image_height,image_width).to(device)
-
+    onnx_path = "./onnx_3588/image_encoder_304_480.onnx"
+    onnx_simplified_path = "./onnx_3588/image_encoder_304_480_simplified.onnx"
     # 导出 ONNX，指定输出命名
     torch.onnx.export(
         wrapper,
         dummy_input,
-        "./onnx_3588/image_encoder.onnx",
+        onnx_path,
         export_params=True,
         opset_version=13,
         input_names=['input_image'],
         output_names=['f16', 'f8', 'f4', 'pix_feat', 'key', 'shrinkage', 'selection'],
         dynamic_axes=None  # 如果你想支持动态尺寸可在此添加
     )
+    model = onnx.load(onnx_path)
+    model_simplified, check = simplify(
+        model,
+        dynamic_input_shape=False,  
+        skip_fuse_bn=False         
+        # enable_shape_inference=True 
+    )
+    onnx.save(model_simplified, onnx_simplified_path)
+    print(f"ONNX模型已简化并保存到：{onnx_simplified_path}")
 
 def ExportReadMemoryOnnx(image_height,image_width):
     device = torch.device('cuda')
@@ -393,21 +423,21 @@ def ExportReadMemoryOnnx(image_height,image_width):
      # 构造 dummy 输入
     H=image_height//16
     W=image_width//16
-    pix_feat = torch.randn(1, 256, H, W, device=device)         # 输入像素特征
-    key = torch.randn(1, 64, H, W, device=device)                # key
-    selection = torch.randn(1, 64, H, W, device=device)          # selection mask
-    last_mask = torch.randn(1, 1, image_height, image_width, device=device)           # 上一帧的 mask
+    pix_feat = torch.randn(256, H, W, device=device)         # 输入像素特征 4d
+    key = torch.randn(64, H, W, device=device)                # key 4d
+    selection = torch.randn(64, H, W, device=device)          # selection mask 4d
+    last_mask = torch.randn(1, image_height, image_width, device=device)           # 上一帧的 mask origin: 4d
 
     work_len = H * W * 10
     long_len = 128 * 20
-    mem_total_len =  2480 #work_len + long_len
+    mem_total_len =  2280 #2480 #work_len + long_len
 
-    mem_key = torch.randn(1, 64, mem_total_len, device=device)        # memory key
-    mem_shrinkage = torch.randn(1, 1, mem_total_len, device=device)   # shrinkage
-    mem_value = torch.randn(1, 256, mem_total_len, device=device)     # value
+    mem_key = torch.randn(1, 64, mem_total_len, device=device)        # memory key 3d
+    mem_shrinkage = torch.randn(1, 1, mem_total_len, device=device)   # shrinkage  3d
+    mem_value = torch.randn(1, 256, mem_total_len, device=device)     # value  3d
 
-    sensory = torch.randn(1, 1, 256, H, W, device=device)              # sensory (全局引导)
-    obj_mem = torch.randn(1, 1, 16, 257, device=device)                # object memory (历史)
+    sensory = torch.randn(1, 1, 256, H, W, device=device)              # sensory (全局引导) 5d
+    obj_mem = torch.randn(1, 1, 1, 16, 257, device=device)                # object memory (历史) 4d
 
     # 打包输入
     dummy_inputs = (
@@ -415,12 +445,13 @@ def ExportReadMemoryOnnx(image_height,image_width):
         mem_key, mem_shrinkage, mem_value,
         sensory, obj_mem
     )
-
+    onnx_path = "./onnx_3588/read_memory_304_480_test_21.onnx"
+    onnx_simplified_path = "./onnx_3588/read_memory_304_480_simplified_test_21.onnx"
     # 导出 ONNX
     torch.onnx.export(
         wrapper,
         dummy_inputs,
-        "./onnx_3588/read_memory.onnx",
+        onnx_path,
         do_constant_folding=False ,
         export_params=True,
         opset_version=13,
@@ -429,11 +460,21 @@ def ExportReadMemoryOnnx(image_height,image_width):
             "mem_key", "mem_shrinkage", "mem_value",
             "sensory", "obj_mem"
         ],
-        
+        # output_names = ['pix_feat_out', 'key_out', 'selection_out', 'last_mask_out', 'mem_key_out', 'mem_shrinkage_out', 'mem_value_out', 'sensory_out', 'obj_mem_out', 'similarity', 'affinity', 'usage', 'visual_readout', 'pixel_readout'],
+        # output_names = ["obj_memory"],
+        # output_names = ["usage", "pixel_readout", "visual_readout", "obj_memory"],
         output_names=["readout_memory", "usage"],
         dynamic_axes=None  # 如果你想支持动态尺寸可以进一步指定
     )
-
+    model = onnx.load(onnx_path)
+    model_simplified, check = simplify(
+        model,
+        dynamic_input_shape=False,  
+        skip_fuse_bn=False         
+        # enable_shape_inference=True 
+    )
+    onnx.save(model_simplified, onnx_simplified_path)
+    print(f"ONNX模型已简化并保存到：{onnx_simplified_path}")
 
 def ExportSegmentOnnx(image_height, image_width):
     device = torch.device("cuda")
@@ -456,7 +497,6 @@ def ExportSegmentOnnx(image_height, image_width):
         # dummy_readout = torch.randn(1, 256, H, W).to(device) # for rk3588
         # dummy_sensory = torch.randn(1, 256, H, W).to(device) # for rk3588
     elif cutie.cfg.model.pixel_encoder.type == "resnet18":
-        print('yes')
         dummy_f16 = torch.randn(1, 256, H, W).to(device)
         dummy_f8  = torch.randn(1, 128, H * 2, W * 2).to(device)
         dummy_f4  = torch.randn(1, 64,  H * 4, W * 4).to(device)
@@ -468,11 +508,12 @@ def ExportSegmentOnnx(image_height, image_width):
     traced = torch.jit.trace(wrapper, (dummy_f16, dummy_f8, dummy_f4, dummy_readout, dummy_sensory))
     with open("traced_graph.txt", "w") as f:
         f.write(str(traced.graph))
-
+    onnx_path = "./onnx_3588/segment_304_480_test_2.onnx"
+    onnx_simplified_path = "./onnx_3588/segment_304_480_simplified_test_2.onnx"
     torch.onnx.export(
         wrapper,
         (dummy_f16, dummy_f8, dummy_f4, dummy_readout, dummy_sensory),
-        "./onnx_3588/segment.onnx",
+        onnx_path,
         input_names=["f16", "f8", "f4", "readout_memory", "sensory"],
         output_names=["sensory_out", "net_mask","pred_prob_with_bg","mask"],
         export_params=True,
@@ -480,6 +521,15 @@ def ExportSegmentOnnx(image_height, image_width):
         do_constant_folding=True,
         verbose=False
     )
+    model = onnx.load(onnx_path)
+    model_simplified, check = simplify(
+        model,
+        dynamic_input_shape=False,  
+        skip_fuse_bn=False         
+        # enable_shape_inference=True 
+    )
+    onnx.save(model_simplified, onnx_simplified_path)
+    print(f"ONNX模型已简化并保存到：{onnx_simplified_path}")
 
 def ExportEncodeMaskOnnx(image_height, image_width):
     device = torch.device("cuda")
@@ -500,12 +550,13 @@ def ExportEncodeMaskOnnx(image_height, image_width):
     dummy_pix_feat = torch.randn(1, 256, H, W, device=device)
     dummy_sensory = torch.randn(1, 1, 256, H, W, device=device)
     dummy_prob = torch.randn(1, 1, image_height, image_width, device=device)
-
+    onnx_path = "./onnx_3588/encode_mask_304_480.onnx"
+    onnx_simplified_path = "./onnx_3588/encode_mask_304_480_simplified.onnx"
     # 导出到 onnx
     torch.onnx.export(
         wrapper,
         (dummy_image, dummy_pix_feat, dummy_sensory, dummy_prob),
-        "./onnx_3588/encode_mask.onnx",
+        onnx_path,
         verbose=False,  # 开启详细日志
         input_names=["image", "pix_feat", "sensory", "prob"],
         output_names=["msk_value", "sensory_out", "obj_value"],
@@ -514,9 +565,17 @@ def ExportEncodeMaskOnnx(image_height, image_width):
         do_constant_folding=True,
         dynamic_axes=None  # 关键：固定 shape，禁用动态维度
     )
+    model = onnx.load(onnx_path)
+    model_simplified, check = simplify(
+        model,
+        dynamic_input_shape=False,  
+        skip_fuse_bn=False         
+        # enable_shape_inference=True 
+    )
+    onnx.save(model_simplified, onnx_simplified_path)
+    print(f"ONNX模型已简化并保存到：{onnx_simplified_path}")
 
 # ExportEncoderOnnx(image_height,image_width)
-
 def ExportCompressMemOnnx(image_height, image_width):
 
     device = torch.device("cuda")
@@ -547,7 +606,7 @@ def ExportCompressMemOnnx(image_height, image_width):
     torch.onnx.export(
         wrapper,
         (dummy_history_key, dummy_history_shrinkage, dummy_history_selection, dummy_history_value, dummy_usage),
-        "./onnx_3588/compress_mem.onnx",
+        "./onnx_3588/compress_mem_304_480.onnx",
         input_names=["history_key", "history_shrinkage", "history_selection", "history_value", "usage"],
         output_names=["prototype_key", "prototype_value", "prototype_shrinkage"],
         opset_version=13,
@@ -561,7 +620,7 @@ def ExportCompressMemOnnx(image_height, image_width):
 # ExportEncodeMaskOnnx(image_height,image_width)
 # ExportFullStageOnnx(image_height,image_width)
 # ExportCompressMemOnnx(image_height, image_width)
-# ExportReadMemoryOnnx(image_height,image_width)
+ExportReadMemoryOnnx(image_height,image_width)
 # ExportSegmentOnnx(image_height, image_width)
 # except Exception as e:
 #     with open("error_log.txt", "w") as f:

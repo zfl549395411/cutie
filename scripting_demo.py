@@ -41,12 +41,12 @@ def resize(image, mask, size=480):
             new_w = int(w / min_side * size)
             image = F.interpolate(image.unsqueeze(0),
                                       size=(new_h, new_w),
-                                      mode='bilinear',
+                                      mode='area',
                                       align_corners=False)[0]
                 
             mask = F.interpolate(mask.unsqueeze(0).unsqueeze(0).float(),
                                              size=(new_h, new_w),
-                                             mode='bilinear')[0, 0].round().long()
+                                             mode='area')[0, 0].round().long()
        
             return image, mask
                     
@@ -208,7 +208,7 @@ image_path = '/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/subway/image
 # mask_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/test_longtime_disappear/masks/fixed_roi_mask.png"
 mask_path = '/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/subway/masks/fixed_roi_mask_50f.png'
 # save_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/vedio_with_mask/test_track_fa_lr_304_480_nr_nusl_max4f_res18" 
-save_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/vedio_with_mask/test_subway_fa_lr_304_480_nr_nusl_max4f_res18" 
+save_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/vedio_with_mask/test_subway_fa_lr_304_480_nr_nusl_max4f_res18_sem" 
 # save_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/vedio_with_mask/test_longtime_disappear_fa_lr_320_495_nr_nusl_max3f"
 os.makedirs(save_path, exist_ok=True)
 main()

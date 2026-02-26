@@ -144,7 +144,7 @@ class HighResolutionModule(nn.Module):
                     y = y + F.interpolate(
                         self.fuse_layers[i][j](x[j]),
                         size=[height_output, width_output],
-                        mode='bilinear', align_corners=self.align_corners)
+                        mode='area', align_corners=self.align_corners)
                 else:
                     y = y + self.fuse_layers[i][j](x[j])
             x_fuse.append(self.relu(y))
@@ -388,11 +388,11 @@ class HighResolutionNet(nn.Module):
         # Upsampling
         x0_h, x0_w = x[0].size(2), x[0].size(3)
         x1 = F.interpolate(x[1], size=(x0_h, x0_w),
-                           mode='bilinear', align_corners=self.align_corners)
+                           mode='area', align_corners=self.align_corners)
         x2 = F.interpolate(x[2], size=(x0_h, x0_w),
-                           mode='bilinear', align_corners=self.align_corners)
+                           mode='area', align_corners=self.align_corners)
         x3 = F.interpolate(x[3], size=(x0_h, x0_w),
-                           mode='bilinear', align_corners=self.align_corners)
+                           mode='area', align_corners=self.align_corners)
 
         return torch.cat([x[0], x1, x2, x3], 1)
 

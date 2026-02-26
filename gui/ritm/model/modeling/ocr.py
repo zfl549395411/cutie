@@ -136,6 +136,6 @@ class ObjectAttentionBlock2D(nn.Module):
         context = self.f_up(context)
         if self.scale > 1:
             context = F.interpolate(input=context, size=(h, w),
-                                    mode='bilinear', align_corners=self.align_corners)
+                                    mode='area', align_corners=self.align_corners)
 
         return context

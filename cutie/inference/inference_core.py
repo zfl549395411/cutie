@@ -120,7 +120,7 @@ class InferenceCore:
                                as_permanent=as_permanent)
         self.last_mem_ti = self.curr_ti
         if is_deep_update:
-            self.memory.update_sensory(sensory, self.object_manager.all_obj_ids)
+            self.memory.update_sensory(sensory, self.object_manager.all_obj_ids) # cfg.mem_every=4保存一次sensory
 
     def _segment(self,
                  key: torch.Tensor,
@@ -204,9 +204,11 @@ class InferenceCore:
         delete_buffer: whether to delete the image feature buffer after this step
         force_permanent: the memory recorded this frame will be added to the permanent memory
         """
+        
         if objects is None and mask is not None:
             assert not idx_mask
             objects = list(range(1, mask.shape[0] + 1))
+            
 
         # resize input if needed -- currently only used for the GUI
         resize_needed = False
@@ -243,14 +245,16 @@ class InferenceCore:
         # whether to update the working memory
         # 如果有mask强制更新，否则5帧强制更新一次
         is_mem_frame = ((self.curr_ti - self.last_mem_ti >= self.mem_every) or
-                        (mask is not None)) and (not end)
+                        (mask is not None)) and (not end) #初始帧的结果需要保存下来
+        
         # segment when there is no input mask or when the input mask is incomplete
         # 如果无mask输入或者存在新的object时触发完整分割
         need_segment = (mask is None) or (self.object_manager.num_obj > 0
                                           and not self.object_manager.has_all(objects))
         # sensor memory更新节奏，与完整的memory(long memory和pixel memory)分开，避免冲高
         update_sensory = ((self.curr_ti - self.last_mem_ti) in self.stagger_ti) and (not end)
-
+       
+        # breakpoint()
         # encoding the image
         # 全量特征图 全局pix特征
         # 输入为1*3*H*W，输出图像编码的三种下采样特征ms_feat为1*(64*n)*(H/n)*(W/n),n为4 8 16，再对f16卷积通道下采样到指定256
@@ -258,7 +262,7 @@ class InferenceCore:
         # 注意力机制相关特征 来自于f16用于相似性度量的key 用于削减注意力峰值的shrinkage 用于低响应mask的selection
         # key: 1*64*(H/16)*(W/16), shrinkage：拍平了 所以是1*1*(H/16)*(W/16)，selection：每个特征值的mask,1*64*(H/16)*(W/16)
         # key也是一个全局特征,所以注意力实际上是查询的需要关注的空间
-        key, shrinkage, selection = self.image_feature_store.get_key(self.curr_ti, image) # key.shape=[1, 64, 20, 31]  shrinkage.shape=[1, 1, 20, 31] selection.shape=[1, 64, 20, 31]
+        key, shrinkage, selection = self.image_feature_store.get_key(self.curr_ti, image) # key.shape=[1, 64, 20, 31]  shrinkage.shape=[1, 1, 20, 31] selection.shape=[1, 64, 20, 31]  
        
 
         # segmentation from memory if needed
@@ -331,16 +335,15 @@ class InferenceCore:
                              shrinkage,
                              selection,
                              force_permanent=force_permanent)
-
         if delete_buffer:
-            self.image_feature_store.delete(self.curr_ti)
+            self.image_feature_store.delete(self.curr_ti) # delete_buffer 删除当前帧的图像
 
         output_prob = unpad(pred_prob_with_bg, self.pad)
         if resize_needed:
             # restore output to the original size
             output_prob = F.interpolate(output_prob.unsqueeze(0),
                                         size=(h, w),
-                                        mode='bilinear',
+                                        mode='area',
                                         align_corners=False)[0]
 
         return output_prob

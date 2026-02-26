@@ -84,7 +84,7 @@ class DeepLabV3Plus(nn.Module):
             c1 = self.skip_project(c1)
 
             x = self.aspp(c4)
-            x = F.interpolate(x, c1.size()[2:], mode='bilinear', align_corners=True)
+            x = F.interpolate(x, c1.size()[2:], mode='area', align_corners=True)
             x = torch.cat((x, c1), dim=1)
             x = self.head(x)
 
@@ -177,7 +177,7 @@ class _AsppPooling(nn.Module):
 
     def forward(self, x):
         pool = self.gap(x)
-        return F.interpolate(pool, x.size()[2:], mode='bilinear', align_corners=True)
+        return F.interpolate(pool, x.size()[2:], mode='area', align_corners=True)
 
 
 def _ASPPConv(in_channels, out_channels, atrous_rate, norm_layer):

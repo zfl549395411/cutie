@@ -46,7 +46,7 @@ if __name__ in "__main__":
     import qdarktheme
     from gui.main_controller import MainController
 
-    # logging
+    # logging                                                                      
     log = logging.getLogger()
 
     # getting hydra's config without using its decorator
@@ -71,7 +71,7 @@ if __name__ in "__main__":
             assert k not in cfg, f'Argument {k} already exists in config'
             cfg[k] = v
 
-    # start everything
+    # start everything                                                                                                                                                                          
     app = QApplication(sys.argv)
     qdarktheme.setup_theme("auto")
     ex = MainController(cfg)

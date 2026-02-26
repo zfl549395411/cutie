@@ -21,7 +21,6 @@ def interpolate_groups(g: torch.Tensor, ratio: float, mode: str,
                       scale_factor=ratio,
                       mode='bilinear',
                       align_corners=align_corners)
-    
     g = g.view(batch_size, num_objects, *g.shape[1:])
     return g
 
