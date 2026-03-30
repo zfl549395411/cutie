@@ -192,17 +192,20 @@ class CUTIE(nn.Module):
         selector is 1 if an object exists, and 0 otherwise. We use it to filter padded objects
             during training.
         """
+        # 通过maskdecoder处理多尺度特征、记忆读取和感官记忆，更新感官记忆并获取logits
         sensory, logits = self.mask_decoder(ms_image_feat,
                                             memory_readout,
                                             sensory,
                                             chunk_size=chunk_size,
                                             update_sensory=update_sensory)
 
+        # 将logits转换为概率
         prob = torch.sigmoid(logits)
+        # 如果提供了selector，则用其过滤概率（用于训练时填充对象）
         if selector is not None:
             prob = prob * selector
 
-        # Softmax over all objects[]
+        # 对所有对象进行softmax聚合，并上采样到原始分辨率
         logits = aggregate(prob, dim=1)
         logits = F.interpolate(logits, scale_factor=4, mode='bilinear', align_corners=False)
         prob = F.softmax(logits, dim=1)
