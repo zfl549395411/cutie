@@ -42,9 +42,9 @@ def unpad(img: torch.Tensor, pad: Iterable[int]) -> torch.Tensor:
         raise NotImplementedError
     return img
 
-def prod(input, dim=1, keepdim=True, eps=1e-8):
+def prod(input, dim=1, keepdim=True, eps=1e-5):
     input_safe = input + eps
-    log_input_safe = torch.log(input_safe)
+    log_input_safe = torch.log(input_safe).clamp(-12,0)
     sum_log = torch.sum(log_input_safe, dim=dim, keepdim=keepdim)
     prob_sim = torch.exp(sum_log)
     return prob_sim
@@ -54,9 +54,33 @@ def aggregate(prob: torch.Tensor, dim: int) -> torch.Tensor:
     with torch.cuda.amp.autocast(enabled=False):
         prob = prob.float()
         new_prob = torch.cat([prod(1 - prob, dim=dim, keepdim=True), prob],
-                             dim).clamp(1e-7, 1 - 1e-7) # this operater is not suporrted by rk3588
-        logits = torch.log((new_prob / (1 - new_prob)))
+                             dim).clamp(1e-1, 1 - 1e-1) # prod operater is modified for rk3588 and s100 
+        # # experiments verify that new_prob only need keep relative number relationship
+        logits = torch.log(new_prob/(1-new_prob)) # 增强特征显著性
+
+        #------------------------for quantization debug------------------------------
+        # scale_np = 2*new_prob.max()/255
+        # new_prob_f = torch.round(new_prob/scale_np).clamp(-128, 127)*scale_np
+        
+        # tmp_div = 1 / (1 - new_prob_f)
+        # scale = 2*tmp_div.max()/255
+        # tmp_div_f = torch.round(tmp_div/scale).clamp(-128, 127)*scale
+        # tmp = new_prob * tmp_div_f # for debuging , (0.1111, 9)
+        # scale_ = 2*tmp.max()/255
+        # tmp_f = torch.round(tmp/scale_).clamp(-128, 127)*scale_
+        # logits = torch.log(tmp_f)
+   
+        # # breakpoint()
+        # # logits = torch.log((new_prob / (1 - new_prob))) # 增强特征显著性
+        # # with open("/media/sti/B20F0FD71CF7DE70/cutie/debug_txt/log.txt", "w") as f:
+        # #     for data in logits.flatten():
+        # #         f.write(str(data))
+        # #         f.write("\n")
+        # # breakpoint()
+        # return logits
         return logits
+
+#------------------------------------origin code --------------------------------------
 # # @torch.jit.script
 # def aggregate(prob: torch.Tensor, dim: int) -> torch.Tensor:
 #     with torch.cuda.amp.autocast(enabled=False):

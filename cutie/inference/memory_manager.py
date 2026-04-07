@@ -2,7 +2,7 @@ import logging
 from omegaconf import DictConfig
 from typing import List, Dict
 import torch
-
+import numpy as np
 from cutie.inference.object_manager import ObjectManager
 from cutie.inference.kv_memory_store import KeyValueMemoryStore
 from cutie.model.cutie import CUTIE
@@ -123,7 +123,7 @@ class MemoryManager:
         return value
 
     def read(self, pix_feat: torch.Tensor, query_key: torch.Tensor, selection: torch.Tensor,
-             last_mask: torch.Tensor, network: CUTIE) -> Dict[int, torch.Tensor]:
+             last_mask: torch.Tensor, network: CUTIE, current_ti:int) -> Dict[int, torch.Tensor]:
         """
         Read from all memory stores and returns a single memory readout tensor for each object
 
@@ -141,6 +141,7 @@ class MemoryManager:
 
         query_key = query_key.flatten(start_dim=2)  # bs*C^k*HW
         selection = selection.flatten(start_dim=2)  # bs*C^k*HW
+
         """
         Compute affinity and perform readout
         """
@@ -157,6 +158,7 @@ class MemoryManager:
                     [self.long_mem.shrinkage[bucket_id], self.work_mem.shrinkage[bucket_id]], -1)
                 # 相似性度量并获取topk的注意力索引和总权重
                 # memory中每一帧的记忆都是一个B*1*H*W的key_value映射，即一个slot，一共有N帧所以有B*N*H*W，从这H个slot中选出topk个和当前目标query_key最相似的以及每个slot总的注意力权重
+                
                 similarity = get_similarity(memory_key, shrinkage, query_key, selection)
                 affinity, usage = do_softmax(similarity,
                                              top_k=self.top_k,
@@ -179,6 +181,13 @@ class MemoryManager:
                 memory_key = self.work_mem.key[bucket_id] # [1, 64, 2280]
                 shrinkage = self.work_mem.shrinkage[bucket_id] # [1, 1, 2280]
                 # 输出的是历史中每个记忆空间和当前的相似度相似度即1*1620*memory_frame*1620
+                # if(13<=current_ti<214):
+                #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/read_memory/mem_key/read_memory_mem_key_{current_ti}.npy', memory_key.clone().cpu().numpy())
+                #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/read_memory/mem_shrinkage/read_memory_mem_shrinkage_{current_ti}.npy', shrinkage.clone().cpu().numpy())
+                #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/read_memory/key/read_memory_key_{current_ti}.npy', query_key.clone().cpu().numpy())
+                #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/read_memory/selection/read_memory_selection_{current_ti}.npy', selection.clone().cpu().numpy())
+                
+               
                 similarity = get_similarity(memory_key, shrinkage, query_key, selection)
 
                 if self.use_long_term:
@@ -188,7 +197,7 @@ class MemoryManager:
                                                  return_usage=True)
                     self.work_mem.update_bucket_usage(bucket_id, usage)
                 else:
-                    affinity = do_softmax(similarity, top_k=self.top_k, inplace=True)
+                    affinity, usage = do_softmax(similarity, top_k=self.top_k, inplace=True)
             
            
             # 分片是为了加速并行
@@ -198,22 +207,39 @@ class MemoryManager:
                 object_chunks = [
                     bucket[i:i + self.chunk_size] for i in range(0, len(bucket), self.chunk_size)
                 ]
+            
             # 融合sensormemory,历史mask，work_memory视觉特征（slot中的value），object_memory等，并通过transformer进行融合
             # 多目标同时进行
             for objects in object_chunks:
                 this_sensory = self._get_sensory_by_ids(objects)
+                # print(f'sensory={this_sensory.min()}  ')
                 # 获取当前目标历史mask
                 this_last_mask = self._get_mask_by_ids(last_mask, objects)
+                # print(f'last_mask={this_last_mask.min()}  ')
                 this_msk_value = self._get_visual_values_by_ids(objects)  # (1/2)*num_objects*C*N
                 # 利用注意力机制从所有存储中对value进行加权计算，输出1*2*256*特征图宽高 msk_value和拼接次数有关，但这里输出无关
+
+                # if(13<=current_ti<214):
+                #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/read_memory/mem_value/read_memory_mem_value_{current_ti}.npy', this_msk_value.clone().cpu().numpy())
+                #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/read_memory/pix_feat/read_memory_pix_feat_{current_ti}.npy', pix_feat.clone().cpu().numpy())
+                #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/read_memory/sensory/read_memory_sensory_{current_ti}.npy', this_sensory.clone().cpu().numpy())
+                #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/read_memory/last_mask/read_memory_last_mask_{current_ti}.npy', this_last_mask.clone().cpu().numpy())
                 visual_readout = self._readout(affinity,
                                                this_msk_value).view(bs, len(objects), self.CV, h, w)
+                # print(f'visual_readout={visual_readout.min()}  ')
                 # 聚合信息尺度不变
                 pixel_readout = network.pixel_fusion(pix_feat, visual_readout, this_sensory,
                                                      this_last_mask)
+                # print(f'pixel_readout={pixel_readout.min()}  ')
                 this_obj_mem = self._get_object_mem_by_ids(objects)
+                this_obj_mem = this_obj_mem / this_obj_mem.abs().max() # this code line is added for s100 quantization 
+                # print(f'this_obj_mem={this_obj_mem.min()}  ')
                 this_obj_mem = this_obj_mem.unsqueeze(2) if this_obj_mem is not None else None
+
+                # if(13<=current_ti<214):
+                #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/read_memory/obj_mem/read_memory_obj_mem_{current_ti}.npy', this_obj_mem.clone().cpu().numpy())
                 readout_memory, aux_features = network.readout_query(pixel_readout, this_obj_mem)
+                # print(f'readout_memory={readout_memory.min()}\n')
                 for i, obj in enumerate(objects):
                     all_readout_mem[obj] = readout_memory[:, i]
 
@@ -299,6 +325,7 @@ class MemoryManager:
                     self.obj_v[obj][:, :, -1] = new_acc
                 else:
                     self.obj_v[obj] = obj_value[:, obj_id]
+                
 
         # convert mask value tensor into a dict for insertion
         msk_values = {obj: msk_value[:, obj_id] for obj_id, obj in enumerate(objects)}

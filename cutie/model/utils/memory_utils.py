@@ -37,14 +37,30 @@ def get_similarity(mk: torch.Tensor,
         a_sq = mk.pow(2).sum(1).unsqueeze(2)
         two_ab = 2 * (mk.transpose(1, 2) @ qk)
         similarity = (-a_sq + two_ab)
-
+    # similiraty data range (-380, -1)
     if ms is not None:
-        similarity = similarity * ms / math.sqrt(CK)  # B*N*HW
+        similarity = similarity * ms / math.sqrt(CK)  # B*N*HW CK=64
+        similarity = similarity.clamp(-10,10)
+        # ---------------------------------for debug---------------------------
+        # simi = similarity.clone().flatten()
+        # print(simi.min(),simi.max())
+        # with open("./debug_txt/similiraty.txt", "w") as f:
+        #     for num in simi:
+        #         f.write(f"{num}\n")
+        # breakpoint()
+
+
     else:
         similarity = similarity / math.sqrt(CK)  # B*N*HW
-    mask = (mk.abs().sum(dim=2) == 0)  # B x N, True 表示 padding（全0）的位置
-    mask = mask.unsqueeze(2)            # B x N x 1，方便广播
-    similarity = similarity.masked_fill(mask, float('-1e4'))
+    # similiraty data range (-80, -1)
+
+    #---------------------origin code, but not useful---------------------------
+    # mask = (mk.abs().sum(dim=2) == 0)  # B x N, True 表示 padding（全0）的位置
+    # mask = mask.unsqueeze(2)            # B x N x 1，方便广播
+    # if(mask.any()):
+    #         breakpoint()
+    # similarity = similarity.masked_fill(mask, float('-1e4'))
+    
     return similarity
 
 
@@ -52,29 +68,38 @@ def do_softmax(
         similarity: torch.Tensor,
         top_k: Optional[int] = None,
         inplace: bool = False,
-        return_usage: bool = False) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
+        return_usage: bool = True) -> Union[torch.Tensor, Tuple[torch.Tensor, torch.Tensor]]:
     # normalize similarity with top-k softmax
     # similarity: B x N x [HW/P]
     # use inplace with care
     if top_k is not None:
+        # scale_similiraty = 2*similarity.abs().max()/255
+        # similarity_f = torch.round(similarity/scale_similiraty).clamp(-128,127)*scale_similiraty
+        values, indices = torch.topk(similarity, k=top_k, dim=1)
+        # breakpoint()
+        # affinity = similarity.exp_()
+        # affinity /= torch.sum(affinity, dim=1, keepdim=True) 
         
-        # values, indices = torch.topk(similarity, k=top_k, dim=1)
-        affinity = similarity.exp_()
-        affinity /= torch.sum(affinity, dim=1, keepdim=True) 
-        # # print(affinity.shape)
+        # 替代上述两行代码
+        # affinity = torch.softmax(similarity, dim=1)
 
-        # x_exp = values.exp_()
-        # x_exp /= torch.sum(x_exp, dim=1, keepdim=True)
-        # if inplace:
-        #     similarity.zero_().scatter_(1, indices, x_exp)  # B*N*HW
-        #     affinity = similarity
-        # else:
-        #     affinity = torch.zeros_like(similarity)
-        #     batch_idx = torch.arange(affinity.shape[0], device=affinity.device)[:, None, None]
-        #     d2_idx = torch.arange(affinity.shape[2], device=affinity.device)[None, None, :]
-        #     affinity[batch_idx, indices, d2_idx] = x_exp
-        #     affinity = affinity.contiguous()
-            # affinity = torch.zeros_like(similarity).scatter_(1, indices, x_exp)  # B*N*HW
+        
+        x_exp = values.exp_().clamp(1e-2, 1)
+        x_exp /= torch.sum(x_exp, dim=1, keepdim=True)
+        # scale = 2*x_exp.abs().max()/255
+        # x_exp_f = torch.round(x_exp/scale).clamp(-128,127)*scale
+        # x_exp = x_exp_f
+        # breakpoint()
+        if inplace:
+            similarity.zero_().scatter_(1, indices, x_exp)  # B*N*HW
+            affinity = similarity
+        else:
+            affinity = torch.zeros_like(similarity)
+            batch_idx = torch.arange(affinity.shape[0], device=affinity.device)[:, None, None]
+            d2_idx = torch.arange(affinity.shape[2], device=affinity.device)[None, None, :]
+            affinity[batch_idx, indices, d2_idx] = x_exp
+            affinity = affinity.contiguous()
+            affinity = torch.zeros_like(similarity).scatter_(1, indices, x_exp)  # B*N*HW
     else:
         maxes = torch.max(similarity, dim=1, keepdim=True)[0]
         x_exp = torch.exp(similarity - maxes)

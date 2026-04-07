@@ -30,7 +30,7 @@ class ImageFeatureStore:
         if index not in self._store:
             self._encode_feature(index, image)
 
-        return self._store[index][:2]
+        return self._store[index]
 
     def get_key(self, index: int,
                 image: torch.Tensor) -> (torch.Tensor, torch.Tensor, torch.Tensor):

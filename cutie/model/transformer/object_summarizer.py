@@ -15,9 +15,18 @@ def _weighted_pooling(masks: torch.Tensor, value: torch.Tensor,
     # masks: B*num_objects*H*W*num_summaries: 1 if allowed
     weights = logits.sigmoid() * masks
     # B*num_objects*num_summaries*value_dim
-    sums = torch.einsum('bkhwq,bkhwc->bkqc', weights, value)
-    # B*num_objects*H*W*num_summaries -> B*num_objects*num_summaries*1
-    area = weights.flatten(start_dim=2, end_dim=3).sum(2).unsqueeze(-1)
+    b, k, h, w, q = weights.shape
+    _, _, _, _, c = value.shape
+    weights_reshaped = weights.permute(0, 1, 4, 2, 3).reshape(b*k, q, h*w)  # [b*k, q, h*w]
+    value_reshaped = value.permute(0, 1, 4, 2, 3).reshape(b*k, c, h*w)      # [b*k, c, h*w]
+    sums_reshaped = torch.matmul(weights_reshaped, value_reshaped.transpose(1, 2))  # [b*k, q, c]
+    sums = sums_reshaped.reshape(b, k, q, c) # for s100
+    # sums = torch.einsum('bkhwq,bkhwc->bkqc', weights, value)
+    # # B*num_objects*H*W*num_summaries -> B*num_objects*num_summaries*1
+    area = weights.flatten(start_dim=2, end_dim=3).sum(2).unsqueeze(-1) # origin
+    # area = weights.reshape(1,1,1410,16).sum(2).unsqueeze(-1) # for s100
+    # print(torch.equal(area, area_))
+    # breakpoint()
 
     # B*num_objects*num_summaries*value_dim
     return sums, area
@@ -82,7 +91,7 @@ class ObjectSummarizer(nn.Module):
             sums, area = _weighted_pooling(repeated_masks, feature, logits)
 
         summaries = torch.cat([sums, area], dim=-1)
-
+        
         if need_weights:
             return summaries, logits
         else:

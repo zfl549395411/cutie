@@ -305,6 +305,6 @@ class MaskDecoder(nn.Module):
             
             all_logits.append(logits)
         logits = torch.cat(all_logits, dim=0)
-        logits = logits.view(batch_size, num_objects, *logits.shape[-2:])
+        logits = logits.view(batch_size, num_objects, *logits.shape[-2:]).clamp(-5,5)
 
         return new_sensory, logits

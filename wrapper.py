@@ -14,8 +14,16 @@ import torch.fx
 import sys
 from onnxsim import simplify
 import onnx
-image_width=480 # step函数中pad后的维度
-image_height=304
+# image_width=480 # step函数中pad后的维度
+# image_height=304
+# mem_total_len = 2280
+
+# image_width=752 # step函数中pad后的维度
+# image_height=480
+
+image_width = 624
+image_height = 400
+# mem_total_len = 3900
 def OnnxSimplify(model_path:str, output_path:str):
     from onnxsim import simplify
     import onnx
@@ -193,13 +201,12 @@ class ReadMemoryONNXWrapper(nn.Module):
         # last_mask = last_mask.unsqueeze(0)
         # obj_mem = obj_mem.unsqueeze(0) 
         """
-        pix_feat = pix_feat.unsqueeze(0)
-        key = key.unsqueeze(0)
-        selection = selection.unsqueeze(0)
-        last_mask = last_mask.unsqueeze(0)
+        mem_key = mem_key.squeeze(0) # for s100
+        mem_shrinkage = mem_shrinkage.squeeze(0) # for s100
+        mem_value = mem_value.squeeze(0) # for s100
+        sensory = sensory.unsqueeze(0) # for s100
         h, w = pix_feat.shape[-2:]
         bs = pix_feat.shape[0]
-
         # 计算相似度
         similarity = get_similarity(mem_key, mem_shrinkage, key, selection, add_batch_dim=False)
 
@@ -207,7 +214,7 @@ class ReadMemoryONNXWrapper(nn.Module):
         affinity, usage = do_softmax(similarity,
                                      top_k=self.InferenceCore.memory.top_k,
                                      inplace=False,
-                                     return_usage=True)
+                                     return_usage=True) # 非use long term模式不需要返回usage
 
         # # 读取 memory 特征
         visual_readout = self.InferenceCore.memory._readout(
@@ -229,7 +236,7 @@ class ReadMemoryONNXWrapper(nn.Module):
         # sensory = sensory.unsqueeze(0)
        
         # 调整维度，确保 ONNX 支持
-        # obj_mem = obj_mem.unsqueeze(2) # origin
+        obj_mem = obj_mem.unsqueeze(2) # origin
         # obj_mem_2_clone = obj_mem
         # print(pixel_readout.shape, obj_mem.shape)
         # 最终 memory 读取
@@ -240,7 +247,8 @@ class ReadMemoryONNXWrapper(nn.Module):
         # usage:            H*W*10+128*9
         # return pix_feat, key, selection, last_mask, mem_key, mem_shrinkage, mem_value, sensory, obj_mem, similarity, affinity, usage, visual_readout, pixel_readout
         # return usage , pixel_readout, visual_readout, obj_mem
-        return readout_memory, usage
+        return readout_memory, usage # origin code
+        # return readout_memory, usage, similarity, affinity , visual_readout, pixel_readout # for debug
 
 class SegMentONNXWrapper(nn.Module):
     def __init__(self, inferencecore):
@@ -254,10 +262,11 @@ class SegMentONNXWrapper(nn.Module):
         # readout:          1*1*256*H*W  
         # sensory:          1*1*256*H*W
         ms_image_feat=[f16,f8,f4]
-        # sensory = sensory.unsqueeze(0) # for rk3588
+        readout_memory = readout_memory.unsqueeze(0) # for s100
+        sensory = sensory.unsqueeze(0) # for s100
         sensory, _, pred_prob_with_bg = self.InferenceCore.network.segment(ms_image_feat,readout_memory,sensory,chunk_size=-1,update_sensory=True)
-        # sensory = sensory.squeeze(0) # for rk3588 
-
+        # sensory, logits = self.InferenceCore.network.segment(ms_image_feat,readout_memory,sensory,chunk_size=-1,update_sensory=True) # for split model
+        
         # 去掉batch维度
         pred_prob_with_bg_ = pred_prob_with_bg[0]
         # 去除背景增加batch
@@ -271,6 +280,7 @@ class SegMentONNXWrapper(nn.Module):
         # pred_prob_with_bg:    2*h*w
         # mask:                 h*w
         return sensory,net_mask,pred_prob_with_bg,mask
+        # return sensory, logits #for split model
 
 class EncodeMaskWrapper(nn.Module):
     def __init__(self, inferencecore):
@@ -281,6 +291,7 @@ class EncodeMaskWrapper(nn.Module):
         # pix_feat:         1*256*H*W
         # sensory:          1*1*256*H*W
         # prob:             1*1*h*w
+        sensory = sensory.unsqueeze(0) # for s100
         msk_value, sensory, obj_value, _ =self.InferenceCore.network.encode_mask(
             image,
             pix_feat,
@@ -387,8 +398,8 @@ def ExportEncoderOnnx(image_height,image_width):
 
     # 构造示例输入
     dummy_input = torch.randn(1, 3, image_height,image_width).to(device)
-    onnx_path = "./onnx_3588/image_encoder_304_480.onnx"
-    onnx_simplified_path = "./onnx_3588/image_encoder_304_480_simplified.onnx"
+    onnx_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/image_encoder_400_624.onnx"
+    onnx_simplified_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/image_encoder_400_624_sim.onnx"
     # 导出 ONNX，指定输出命名
     torch.onnx.export(
         wrapper,
@@ -423,21 +434,21 @@ def ExportReadMemoryOnnx(image_height,image_width):
      # 构造 dummy 输入
     H=image_height//16
     W=image_width//16
-    pix_feat = torch.randn(256, H, W, device=device)         # 输入像素特征 4d
-    key = torch.randn(64, H, W, device=device)                # key 4d
-    selection = torch.randn(64, H, W, device=device)          # selection mask 4d
-    last_mask = torch.randn(1, image_height, image_width, device=device)           # 上一帧的 mask origin: 4d
+    pix_feat = torch.randn(1, 256, H, W, device=device)         # 输入像素特征 4d
+    key = torch.randn(1, 64, H, W, device=device)                # key 4d
+    selection = torch.randn(1, 64, H, W, device=device)          # selection mask 4d
+    last_mask = torch.randn(1, 1, image_height, image_width, device=device)           # 上一帧的 mask origin: 4d
 
     work_len = H * W * 10
     long_len = 128 * 20
-    mem_total_len =  2280 #2480 #work_len + long_len
+    mem_total_len =  3900 #2480 #work_len + long_len
 
-    mem_key = torch.randn(1, 64, mem_total_len, device=device)        # memory key 3d
-    mem_shrinkage = torch.randn(1, 1, mem_total_len, device=device)   # shrinkage  3d
-    mem_value = torch.randn(1, 256, mem_total_len, device=device)     # value  3d
+    mem_key = torch.randn(1, 1, 64, mem_total_len, device=device)        # memory key 3d
+    mem_shrinkage = torch.randn(1, 1, 1, mem_total_len, device=device)   # shrinkage  3d
+    mem_value = torch.randn(1, 1, 256, mem_total_len, device=device)     # value  3d
 
-    sensory = torch.randn(1, 1, 256, H, W, device=device)              # sensory (全局引导) 5d
-    obj_mem = torch.randn(1, 1, 1, 16, 257, device=device)                # object memory (历史) 4d
+    sensory = torch.randn(1, 256, H, W, device=device)              # sensory (全局引导) 5d
+    obj_mem = torch.randn(1, 1, 16, 257, device=device)                # object memory (历史) 4d
 
     # 打包输入
     dummy_inputs = (
@@ -445,8 +456,8 @@ def ExportReadMemoryOnnx(image_height,image_width):
         mem_key, mem_shrinkage, mem_value,
         sensory, obj_mem
     )
-    onnx_path = "./onnx_3588/read_memory_304_480_test_21.onnx"
-    onnx_simplified_path = "./onnx_3588/read_memory_304_480_simplified_test_21.onnx"
+    onnx_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/read_memory_400_624_debug_clip_version_1_op17.onnx"
+    onnx_simplified_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/read_memory_400_624_sim_debug_clip_version_1_op17.onnx"
     # 导出 ONNX
     torch.onnx.export(
         wrapper,
@@ -454,7 +465,7 @@ def ExportReadMemoryOnnx(image_height,image_width):
         onnx_path,
         do_constant_folding=False ,
         export_params=True,
-        opset_version=13,
+        opset_version=17,
         input_names=[
             "pix_feat", "key", "selection", "last_mask",
             "mem_key", "mem_shrinkage", "mem_value",
@@ -463,7 +474,8 @@ def ExportReadMemoryOnnx(image_height,image_width):
         # output_names = ['pix_feat_out', 'key_out', 'selection_out', 'last_mask_out', 'mem_key_out', 'mem_shrinkage_out', 'mem_value_out', 'sensory_out', 'obj_mem_out', 'similarity', 'affinity', 'usage', 'visual_readout', 'pixel_readout'],
         # output_names = ["obj_memory"],
         # output_names = ["usage", "pixel_readout", "visual_readout", "obj_memory"],
-        output_names=["readout_memory", "usage"],
+        output_names=["readout_memory", "usage"], # origin code
+        # output_names = ["readout_memory", "usage", "similarity", "affinity" , "visual_readout", "pixel_readout"], # for debug
         dynamic_axes=None  # 如果你想支持动态尺寸可以进一步指定
     )
     model = onnx.load(onnx_path)
@@ -500,21 +512,22 @@ def ExportSegmentOnnx(image_height, image_width):
         dummy_f16 = torch.randn(1, 256, H, W).to(device)
         dummy_f8  = torch.randn(1, 128, H * 2, W * 2).to(device)
         dummy_f4  = torch.randn(1, 64,  H * 4, W * 4).to(device)
-        dummy_readout = torch.randn(1, 1, 256, H, W).to(device)
-        dummy_sensory = torch.randn(1, 1, 256, H, W).to(device)
-        # dummy_readout = torch.randn(1, 256, H, W).to(device) # for rk3588
-        # dummy_sensory = torch.randn(1, 256, H, W).to(device) # for rk3588
+        # dummy_readout = torch.randn(1, 1, 256, H, W).to(device) #origin
+        # dummy_sensory = torch.randn(1, 1, 256, H, W).to(device) #origin
+        dummy_readout = torch.randn(1, 256, H, W).to(device) # for s100
+        dummy_sensory = torch.randn(1, 256, H, W).to(device) # for s100
 
     traced = torch.jit.trace(wrapper, (dummy_f16, dummy_f8, dummy_f4, dummy_readout, dummy_sensory))
     with open("traced_graph.txt", "w") as f:
         f.write(str(traced.graph))
-    onnx_path = "./onnx_3588/segment_304_480_test_2.onnx"
-    onnx_simplified_path = "./onnx_3588/segment_304_480_simplified_test_2.onnx"
+    onnx_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/segment_400_624.onnx"
+    onnx_simplified_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/segment_400_624_sim.onnx"
     torch.onnx.export(
         wrapper,
         (dummy_f16, dummy_f8, dummy_f4, dummy_readout, dummy_sensory),
         onnx_path,
         input_names=["f16", "f8", "f4", "readout_memory", "sensory"],
+        # output_names = ["senory", "logits"], # for split model
         output_names=["sensory_out", "net_mask","pred_prob_with_bg","mask"],
         export_params=True,
         opset_version=13,  # 推荐 >=13，支持更多算子如 `einsum`
@@ -548,10 +561,10 @@ def ExportEncodeMaskOnnx(image_height, image_width):
     # 准备静态 dummy 输入
     dummy_image = torch.randn(1, 3, image_height, image_width, device=device)
     dummy_pix_feat = torch.randn(1, 256, H, W, device=device)
-    dummy_sensory = torch.randn(1, 1, 256, H, W, device=device)
+    dummy_sensory = torch.randn(1, 256, H, W, device=device)
     dummy_prob = torch.randn(1, 1, image_height, image_width, device=device)
-    onnx_path = "./onnx_3588/encode_mask_304_480.onnx"
-    onnx_simplified_path = "./onnx_3588/encode_mask_304_480_simplified.onnx"
+    onnx_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/encode_mask_400_624.onnx"
+    onnx_simplified_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/encode_mask_400_624_sim.onnx"
     # 导出到 onnx
     torch.onnx.export(
         wrapper,
@@ -560,7 +573,7 @@ def ExportEncodeMaskOnnx(image_height, image_width):
         verbose=False,  # 开启详细日志
         input_names=["image", "pix_feat", "sensory", "prob"],
         output_names=["msk_value", "sensory_out", "obj_value"],
-        opset_version=13,
+        opset_version=14,
         export_params=True,
         do_constant_folding=True,
         dynamic_axes=None  # 关键：固定 shape，禁用动态维度

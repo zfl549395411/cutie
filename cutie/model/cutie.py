@@ -3,7 +3,7 @@ import logging
 from omegaconf import DictConfig
 import torch
 import torch.nn as nn
-
+import numpy as np
 from cutie.model.modules import *
 from cutie.model.big_modules import *
 from cutie.model.aux_modules import AuxComputer
@@ -159,9 +159,6 @@ class CUTIE(nn.Module):
                                  last_mask,
                                  last_others,
                                  chunk_size=chunk_size)
-        # pix_feat_out = pix_feat.squeeze(0)
-        # pixel_out = pixel.squeeze(0)
-        # sensory_out = sensory.squeeze(0)
         return fused
 
     def readout_query(self,
@@ -172,7 +169,12 @@ class CUTIE(nn.Module):
                       need_weights=False) -> (torch.Tensor, Dict[str, torch.Tensor]):
         if not self.object_transformer_enabled:
             return pixel_readout, None
-        return self.object_transformer(pixel_readout,
+        # breakpoint()
+        pixel_readout_ = pixel_readout.clamp(-1.5, 1.5)
+        obj_memory_ = obj_memory.clamp(-0.1, 0.3)
+        # print(f'obj_memory max={obj_memory.max()}, min={obj_memory.min()}, mean={obj_memory.mean()}')
+       
+        return self.object_transformer(pixel_readout_,
                                        obj_memory,
                                        selector=selector,
                                        need_weights=need_weights)
@@ -184,7 +186,9 @@ class CUTIE(nn.Module):
                 *,
                 selector: bool = None,
                 chunk_size: int = -1,
-                update_sensory: bool = True) -> (torch.Tensor, torch.Tensor, torch.Tensor):
+                update_sensory: bool = True,
+                # current_ti
+                ) -> (torch.Tensor, torch.Tensor, torch.Tensor):
         """
         multi_scale_features is from the key encoder for skip-connection
         memory_readout is from working/long-term memory
@@ -193,21 +197,40 @@ class CUTIE(nn.Module):
         selector is 1 if an object exists, and 0 otherwise. We use it to filter padded objects
             during training.
         """
+        # if (current_ti<201):
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/segment/f8/segment_f8_{current_ti}.npy', ms_image_feat[1].clone().cpu().numpy())
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/segment/f4/segment_f4_{current_ti}.npy', ms_image_feat[2].clone().cpu().numpy())
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/segment/memory_readout/segment_memory_readout_{current_ti}.npy', memory_readout.clone().cpu().numpy())
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/segment/sensory/segment_sensory_{current_ti}.npy', sensory.clone().cpu().numpy())
         sensory, logits = self.mask_decoder(ms_image_feat,
                                             memory_readout,
                                             sensory,
                                             chunk_size=chunk_size,
                                             update_sensory=update_sensory)
-
-        prob = torch.sigmoid(logits)
+        # fake quant for logits
+        # scale = 2*logits.abs().max()/255
+        # logits_q = (logits / scale).round().clamp(-127,127)
+        # logits = logits_q*scale
+        prob = torch.sigmoid(logits).clamp(1e-1, 1 - 1e-1)
+       
         if selector is not None:
             prob = prob * selector
 
         # Softmax over all objects[]
         logits = aggregate(prob, dim=1)  # torch.Size([1, 2, 76, 120])
         H, W = logits.shape[-2:]
-        logits = F.interpolate(logits, scale_factor=4, mode='bilinear', align_corners=False) # torch.Size([1, 2, 304, 480]) origin
+        logits = F.interpolate(logits, scale_factor=4, mode='bilinear', align_corners=False) # torch.Size([1, 2, image_width, image_height]) 上采样到图像大小
+        
         prob = F.softmax(logits, dim=1)
+        
+
+
+        # # fake quant for prob
+        # scale = 2*prob.abs().max()/65535
+        # prob_q = (prob / scale).round().clamp(-32767,32767)  #对效果没什么影响
+        # prob = prob_q*scale 
+
+        
         return sensory, logits, prob
 
     def compute_aux(self, pix_feat: torch.Tensor, aux_inputs: Dict[str, torch.Tensor],

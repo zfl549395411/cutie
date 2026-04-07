@@ -15,6 +15,12 @@ python_test
 python_test/
 onnx
 onnx/
+onnx_s100
+onnx_s100/
+debug_txt
+debug_txt/
+calib_data
+calib_data/
 wrapper_old.py
 test.py
 traced_graph.txt

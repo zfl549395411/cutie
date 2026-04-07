@@ -41,12 +41,12 @@ def resize(image, mask, size=480):
             new_w = int(w / min_side * size)
             image = F.interpolate(image.unsqueeze(0),
                                       size=(new_h, new_w),
-                                      mode='area',
+                                      mode='bilinear',
                                       align_corners=False)[0]
                 
             mask = F.interpolate(mask.unsqueeze(0).unsqueeze(0).float(),
                                              size=(new_h, new_w),
-                                             mode='area')[0, 0].round().long()
+                                             mode='bilinear')[0, 0].round().long()
        
             return image, mask
                     
@@ -171,26 +171,23 @@ def main():
     mask = torch.from_numpy(np.array(mask)).cuda()
 
     for ti, image_name in enumerate(images[50:]):
+        print(f'image id = {ti}')
         # load the image as RGB; normalization is done within the model
         image = Image.open(os.path.join(image_path, image_name))
         # image.save("/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/test_track_1/masks/image_resize_224_384.png")
         image = to_tensor(image).cuda().float()
-        image, mask = resize(image, mask, size=304)
-        
-        
-    
+        image, mask = resize(image, mask, size=400)
         if ti == 0:
-            print('Yes')
             # if mask is passed in, it is memorized
             # if not all objects are specified, we propagate the unspecified objects using memory
             output_prob = processor.step(image, mask, objects=objects)
         else:
             # otherwise, we propagate the mask from memory
-            output_prob = processor.step(image)
+            output_prob = processor.step(image) # [2, height, width]
         
         # convert output probabilities to an object mask
         mask = processor.output_prob_to_mask(output_prob)
-    
+        
         vedio_with_mask(image, mask, ti, save_path)
 
         # # visualize prediction
@@ -208,7 +205,7 @@ image_path = '/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/subway/image
 # mask_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/test_longtime_disappear/masks/fixed_roi_mask.png"
 mask_path = '/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/subway/masks/fixed_roi_mask_50f.png'
 # save_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/vedio_with_mask/test_track_fa_lr_304_480_nr_nusl_max4f_res18" 
-save_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/vedio_with_mask/test_subway_fa_lr_304_480_nr_nusl_max4f_res18_sem" 
+save_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/vedio_with_mask/s100/test_subway_topk_400_620_nusl_nr_nusl_max4f_res18_sem_s100_debug_transformer"
 # save_path = "/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/vedio_with_mask/test_longtime_disappear_fa_lr_320_495_nr_nusl_max3f"
 os.makedirs(save_path, exist_ok=True)
 main()

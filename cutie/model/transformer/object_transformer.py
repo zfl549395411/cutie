@@ -19,14 +19,14 @@ class QueryTransformerBlock(nn.Module):
         self.num_queries = this_cfg.num_queries
         self.ff_dim = this_cfg.ff_dim
 
-        self.read_from_pixel = CrossAttention(self.embed_dim,
+        self.read_from_pixel = CrossAttention_1(self.embed_dim,
                                               self.num_heads,
                                               add_pe_to_qkv=this_cfg.read_from_pixel.add_pe_to_qkv)
         self.self_attn = SelfAttention(self.embed_dim,
                                        self.num_heads,
                                        add_pe_to_qkv=this_cfg.query_self_attention.add_pe_to_qkv)
         self.ffn = FFN(self.embed_dim, self.ff_dim)
-        self.read_from_query = CrossAttention(self.embed_dim,
+        self.read_from_query = CrossAttention_2(self.embed_dim,
                                               self.num_heads,
                                               add_pe_to_qkv=this_cfg.read_from_query.add_pe_to_qkv,
                                               norm=this_cfg.read_from_query.output_norm)
@@ -47,6 +47,7 @@ class QueryTransformerBlock(nn.Module):
         # attn_mask: (bs*num_objects*num_heads)*num_queries*(H*W)
 
         # bs*num_objects*C*H*W -> (bs*num_objects)*(H*W)*C
+        # attn_mask是bool类型的掩码 
         pixel_flat = pixel.flatten(3, 4).flatten(0, 1).transpose(1, 2).contiguous()
         x, q_weights = self.read_from_pixel(x,
                                             pixel_flat,
@@ -54,22 +55,24 @@ class QueryTransformerBlock(nn.Module):
                                             pixel_pe,
                                             attn_mask=attn_mask,
                                             need_weights=need_weights)
-        x = self.self_attn(x, query_pe)
-        x = self.ffn(x)
-
+        x = x.clamp(-40,40)
+        x = self.self_attn(x, query_pe) # [-5.5, 7.608]
+        x = self.ffn(x) 
         pixel_flat, p_weights = self.read_from_query(pixel_flat,
                                                      x,
                                                      pixel_pe,
                                                      query_pe,
                                                      need_weights=need_weights)
+        # breakpoint()
         pixel = self.pixel_ffn(pixel, pixel_flat)
+        # breakpoint()
 
         if need_weights:
             bs, num_objects, _, h, w = pixel.shape
             q_weights = q_weights.view(bs, num_objects, self.num_heads, self.num_queries, h, w)
             p_weights = p_weights.transpose(2, 3).view(bs, num_objects, self.num_heads,
                                                        self.num_queries, h, w)
-
+        # breakpoint()
         return x, pixel, q_weights, p_weights
 
 
@@ -116,7 +119,6 @@ class QueryTransformer(nn.Module):
                 obj_summaries: torch.Tensor,
                 selector: Optional[torch.Tensor] = None,
                 need_weights: bool = False) -> (torch.Tensor, Dict[str, torch.Tensor]):
-
         # pixel: B*num_objects*embed_dim*H*W
         # obj_summaries: B*num_objects*T*num_queries*embed_dim
         T = obj_summaries.shape[2]
@@ -139,11 +141,12 @@ class QueryTransformer(nn.Module):
         query_emb = self.query_emb.weight.unsqueeze(0).expand(bs * num_objects, -1, -1) + obj_emb
 
         # positional embeddings for pixel features
-        pixel_init = self.pixel_init_proj(pixel)
-        pixel_emb = self.pixel_emb_proj(pixel)
+        pixel_init = self.pixel_init_proj(pixel) # pixel readout 经过一层卷积， 对应onnx中的/Conv_9算子
+        pixel_emb = self.pixel_emb_proj(pixel) # onnx: /conv_10
         pixel_pe = self.spatial_pe(pixel.flatten(0, 1))
-        pixel_emb = pixel_emb.flatten(3, 4).flatten(0, 1).transpose(1, 2).contiguous()
-        pixel_pe = pixel_pe.flatten(1, 2) + pixel_emb
+
+        pixel_emb = pixel_emb.flatten(3, 4).flatten(0, 1).transpose(1, 2).contiguous() 
+        pixel_pe = pixel_pe.flatten(1, 2) + pixel_emb # /Add_14
 
         pixel = pixel_init
 
@@ -154,19 +157,22 @@ class QueryTransformer(nn.Module):
         aux_logits = self.mask_pred[0](pixel).squeeze(2)
         attn_mask = self._get_aux_mask(aux_logits, selector)
         aux_features['logits'].append(aux_logits)
+
         for i in range(self.num_blocks):
-            query, pixel, q_weights, p_weights = self.blocks[i](query,
-                                                                pixel,
+            query_ = query.clone().clamp(-3,3)
+            pixel_ = pixel.clone().clamp(-5,5)
+            query, pixel, q_weights, p_weights = self.blocks[i](query_,
+                                                                pixel_,
                                                                 query_emb,
                                                                 pixel_pe,
                                                                 attn_mask,
                                                                 need_weights=need_weights)
-
+        
             if self.training or i <= self.num_blocks - 1 or need_weights:
                 aux_logits = self.mask_pred[i + 1](pixel).squeeze(2)
                 attn_mask = self._get_aux_mask(aux_logits, selector)
                 aux_features['logits'].append(aux_logits)
-
+        
         aux_features['q_weights'] = q_weights  # last layer only
         aux_features['p_weights'] = p_weights  # last layer only
 
@@ -210,9 +216,9 @@ class QueryTransformer(nn.Module):
         aux_mask_float = aux_mask.float()
         invalid_mask_float = invalid_mask.float()
         # 步骤2：用乘法替代 Where（1 - invalid_mask_float：True→0.0，False→1.0）
-        aux_mask_float = aux_mask_float * (1 - invalid_mask_float)
+        aux_mask_float = aux_mask_float * (1 - invalid_mask_float) # onnx : /Mul_18
         # 步骤3：转回bool
-        aux_mask = aux_mask_float.bool()
+        aux_mask = aux_mask_float.bool() # /Cast_18
 
         # original code
         # aux_mask[torch.where(aux_mask.sum(-1) == aux_mask.shape[-1])] = False
