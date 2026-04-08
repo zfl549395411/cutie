@@ -1484,7 +1484,7 @@ class CustomCrossMultiheadAttention_1(nn.Module):
         )
        
         mask_ = torch.zeros_like(attn_mask, dtype=torch.float32)
-        attn_mask = mask_.masked_fill(attn_mask.clone(), -30)
+        attn_mask = mask_.masked_fill(attn_mask.clone(), -40)
         # attn_mask = F._canonical_mask(
         #     mask=attn_mask,
         #     mask_name="attn_mask",

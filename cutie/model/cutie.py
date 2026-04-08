@@ -187,7 +187,7 @@ class CUTIE(nn.Module):
                 selector: bool = None,
                 chunk_size: int = -1,
                 update_sensory: bool = True,
-                # current_ti
+                current_ti
                 ) -> (torch.Tensor, torch.Tensor, torch.Tensor):
         """
         multi_scale_features is from the key encoder for skip-connection

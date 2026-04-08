@@ -456,8 +456,8 @@ def ExportReadMemoryOnnx(image_height,image_width):
         mem_key, mem_shrinkage, mem_value,
         sensory, obj_mem
     )
-    onnx_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/read_memory_400_624_debug_clip_version_1_op17.onnx"
-    onnx_simplified_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/read_memory_400_624_sim_debug_clip_version_1_op17.onnx"
+    onnx_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/read_memory_400_624_debug_clip_version_with_max.onnx"
+    onnx_simplified_path = "/media/sti/B20F0FD71CF7DE70/cutie/onnx_s100/read_memory_400_624_sim_debug_clip_version_with_max.onnx"
     # 导出 ONNX
     torch.onnx.export(
         wrapper,
@@ -465,7 +465,7 @@ def ExportReadMemoryOnnx(image_height,image_width):
         onnx_path,
         do_constant_folding=False ,
         export_params=True,
-        opset_version=17,
+        opset_version=14,
         input_names=[
             "pix_feat", "key", "selection", "last_mask",
             "mem_key", "mem_shrinkage", "mem_value",

@@ -168,7 +168,7 @@ class InferenceCore:
                                                                  self.object_manager.all_obj_ids),
                                                              chunk_size=self.chunk_size,
                                                              update_sensory=update_sensory,
-                                                            #  current_ti = self.curr_ti
+                                                             current_ti = self.curr_ti
                                                              )
         # remove batch dim
         if self.flip_aug:

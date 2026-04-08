@@ -197,7 +197,7 @@ class MemoryManager:
                                                  return_usage=True)
                     self.work_mem.update_bucket_usage(bucket_id, usage)
                 else:
-                    affinity, usage = do_softmax(similarity, top_k=self.top_k, inplace=True)
+                    affinity, usage = do_softmax(similarity, top_k=self.top_k, inplace=False)
             
            
             # 分片是为了加速并行

@@ -40,7 +40,7 @@ def get_similarity(mk: torch.Tensor,
     # similiraty data range (-380, -1)
     if ms is not None:
         similarity = similarity * ms / math.sqrt(CK)  # B*N*HW CK=64
-        similarity = similarity.clamp(-10,10)
+        similarity = similarity.clamp(-20,20)
         # ---------------------------------for debug---------------------------
         # simi = similarity.clone().flatten()
         # print(simi.min(),simi.max())
@@ -72,34 +72,49 @@ def do_softmax(
     # normalize similarity with top-k softmax
     # similarity: B x N x [HW/P]
     # use inplace with care
-    if top_k is not None:
-        # scale_similiraty = 2*similarity.abs().max()/255
-        # similarity_f = torch.round(similarity/scale_similiraty).clamp(-128,127)*scale_similiraty
-        values, indices = torch.topk(similarity, k=top_k, dim=1)
-        # breakpoint()
+    if top_k is None:
+        
+
+        #--------------------------------------------------------for 3588-------------------------
         # affinity = similarity.exp_()
         # affinity /= torch.sum(affinity, dim=1, keepdim=True) 
+ 
         
         # 替代上述两行代码
         # affinity = torch.softmax(similarity, dim=1)
+        #-----------------------------------------------------------------------------------------
+        # _, _, dim2 = similarity.shape
+        # similarity_1 = similarity[:,:,0:195]
+        # similarity_2 = similarity[:,:,195:390]
+        # similarity_3 = similarity[:,:,390:585]
+        # similarity_4 = similarity[:,:,585:780]
+        # similarity_5 = similarity[:,:,780:975]
+   
+        # values_1, indices_1 = torch.topk(similarity_1, k=top_k, dim=1) 
+        # values_2, indices_2 = torch.topk(similarity_2, k=top_k, dim=1) 
+        # values_3, indices_3 = torch.topk(similarity_3, k=top_k, dim=1) 
+        # values_4, indices_4 = torch.topk(similarity_4, k=top_k, dim=1) 
+        # values_5, indices_5 = torch.topk(similarity_5, k=top_k, dim=1) 
+        # values = torch.concat([values_1, values_2, values_3, values_4, values_5], dim=2)
+        # indices = torch.concat([indices_1, indices_2, indices_3, indices_4, indices_5], dim=2)
 
-        
+        values, indices = torch.topk(similarity, k=top_k, dim=1) 
         x_exp = values.exp_().clamp(1e-2, 1)
         x_exp /= torch.sum(x_exp, dim=1, keepdim=True)
-        # scale = 2*x_exp.abs().max()/255
-        # x_exp_f = torch.round(x_exp/scale).clamp(-128,127)*scale
-        # x_exp = x_exp_f
-        # breakpoint()
+        
         if inplace:
             similarity.zero_().scatter_(1, indices, x_exp)  # B*N*HW
             affinity = similarity
         else:
+            
             affinity = torch.zeros_like(similarity)
-            batch_idx = torch.arange(affinity.shape[0], device=affinity.device)[:, None, None]
+            batch_idx_ = torch.arange(affinity.shape[0], device=affinity.device)[:, None, None]
             d2_idx = torch.arange(affinity.shape[2], device=affinity.device)[None, None, :]
-            affinity[batch_idx, indices, d2_idx] = x_exp
-            affinity = affinity.contiguous()
-            affinity = torch.zeros_like(similarity).scatter_(1, indices, x_exp)  # B*N*HW
+            affinity[batch_idx_, indices, d2_idx] = x_exp
+            # affinity = affinity.contiguous()
+            # affinity_ = torch.zeros_like(similarity).scatter_(1, indices, x_exp)  # B*N*HW
+            # print(torch.equal(affinity,affinity_))
+            # breakpoint()
     else:
         maxes = torch.max(similarity, dim=1, keepdim=True)[0]
         x_exp = torch.exp(similarity - maxes)
