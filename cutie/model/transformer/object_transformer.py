@@ -116,6 +116,7 @@ class QueryTransformer(nn.Module):
                 obj_summaries: torch.Tensor,
                 selector: Optional[torch.Tensor] = None,
                 need_weights: bool = False) -> (torch.Tensor, Dict[str, torch.Tensor]):
+
         # pixel: B*num_objects*embed_dim*H*W
         # obj_summaries: B*num_objects*T*num_queries*embed_dim
         T = obj_summaries.shape[2]
@@ -173,7 +174,6 @@ class QueryTransformer(nn.Module):
             # no need to save all heads
             aux_features['attn_mask'] = attn_mask.view(bs, num_objects, self.num_heads,
                                                        self.num_queries, H, W)[:, :, 0]
-
         return pixel, aux_features
 
     def _get_aux_mask(self, logits: torch.Tensor, selector: torch.Tensor) -> torch.Tensor:

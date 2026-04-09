@@ -11,6 +11,8 @@ workspace
 workspace/
 onnx_3588
 onnx_3588/
+python_test
+python_test/
 onnx
 onnx/
 wrapper_old.py

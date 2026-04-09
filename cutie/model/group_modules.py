@@ -34,10 +34,9 @@ def upsample_groups(g: torch.Tensor,
 
 def downsample_groups(g: torch.Tensor,
                       ratio: float = 1 / 2,
-                      mode: str = 'area',
+                      mode: str = 'bilinear',
                       align_corners: bool = None) -> torch.Tensor:
     return interpolate_groups(g, ratio, mode, align_corners)
-
 
 class GConv2d(nn.Conv2d):
     def forward(self, g: torch.Tensor) -> torch.Tensor:
@@ -49,7 +48,6 @@ class GConv2d(nn.Conv2d):
 class GroupResBlock(nn.Module):
     def __init__(self, in_dim: int, out_dim: int):
         super().__init__()
-
         if in_dim == out_dim:
             self.downsample = nn.Identity()
         else:

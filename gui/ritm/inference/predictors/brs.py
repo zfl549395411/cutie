@@ -92,7 +92,7 @@ class FeatureBRSPredictor(BRSBasePredictor):
             if self.insertion_mode == 'after_c4':
                 x = self.net.feature_extractor.aspp(scaled_backbone_features)
                 x = F.interpolate(x,
-                                  mode='bilinear',
+                                  mode='area',
                                   size=self._c1_features.size()[2:],
                                   align_corners=True)
                 x = torch.cat((x, self._c1_features), dim=1)
@@ -103,7 +103,7 @@ class FeatureBRSPredictor(BRSBasePredictor):
             pred_logits = self.net.head(scaled_backbone_features)
             pred_logits = F.interpolate(pred_logits,
                                         size=image_nd.size()[2:],
-                                        mode='bilinear',
+                                        mode='area',
                                         align_corners=True)
             return pred_logits
 
@@ -142,7 +142,7 @@ class FeatureBRSPredictor(BRSBasePredictor):
 
                 if self.insertion_mode == 'after_aspp':
                     x = self.net.feature_extractor.aspp(c4)
-                    x = F.interpolate(x, size=c1.size()[2:], mode='bilinear', align_corners=True)
+                    x = F.interpolate(x, size=c1.size()[2:], mode='area', align_corners=True)
                     x = torch.cat((x, c1), dim=1)
                     backbone_features = x
                 else:
@@ -205,7 +205,7 @@ class HRNetFeatureBRSPredictor(BRSBasePredictor):
 
             pred_logits = F.interpolate(pred_logits,
                                         size=image_nd.size()[2:],
-                                        mode='bilinear',
+                                        mode='area',
                                         align_corners=True)
             return pred_logits
 
@@ -298,7 +298,7 @@ class InputBRSPredictor(BRSBasePredictor):
             pred_logits = self.net.backbone_forward(x, coord_features=coord_features)['instances']
             pred_logits = F.interpolate(pred_logits,
                                         size=image_nd.size()[2:],
-                                        mode='bilinear',
+                                        mode='area',
                                         align_corners=True)
 
             return pred_logits

@@ -87,8 +87,7 @@ class ResultSaver:
                 path_to_image: str = None):
 
         if resize_needed:
-            prob = F.interpolate(prob.unsqueeze(1), shape, mode='bilinear', align_corners=False)[:,
-                                                                                                 0]
+            prob = F.interpolate(prob.unsqueeze(1), shape, mode='bilinear', align_corners=False)[:,0]
         # Probability mask -> index mask
         mask = torch.argmax(prob, dim=0)
         if self.save_scores:

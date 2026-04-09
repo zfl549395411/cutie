@@ -302,6 +302,7 @@ class MaskDecoder(nn.Module):
                                 i:i + chunk_size] = self.sensory_update([p16, p8, p4],
                                                                         sensory[:,
                                                                                 i:i + chunk_size])
+            
             all_logits.append(logits)
         logits = torch.cat(all_logits, dim=0)
         logits = logits.view(batch_size, num_objects, *logits.shape[-2:])

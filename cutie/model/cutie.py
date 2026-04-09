@@ -59,10 +59,8 @@ class CUTIE(nn.Module):
         return others
 
     def encode_image(self, image: torch.Tensor) -> (Iterable[torch.Tensor], torch.Tensor):
-        
-        image = (image - self.pixel_mean) / self.pixel_std
+        image = (image - self.pixel_mean) / self.pixel_std 
         ms_image_feat = self.pixel_encoder(image)
-       
         return ms_image_feat, self.pix_feat_proj(ms_image_feat[0])
 
     def encode_mask(
@@ -75,7 +73,7 @@ class CUTIE(nn.Module):
             deep_update: bool = True,
             chunk_size: int = -1,
             need_weights: bool = False) -> (torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor):
-        image = (image - self.pixel_mean) / self.pixel_std
+        image = (image - self.pixel_mean) / self.pixel_std 
         # 和mask等大，是一个像素是否属于其他前景目标，一个目标全0
         others = self._get_others(masks)
         # 输出为1*num_objects*256*H/16*W/16
@@ -136,13 +134,13 @@ class CUTIE(nn.Module):
 
         # read from query transformer
         mem_readout, aux_features = self.readout_query(pixel_readout, obj_memory, selector=selector)
-
+        
         aux_output = {
             'sensory': sensory,
             'q_logits': aux_features['logits'] if aux_features else None,
             'attn_mask': aux_features['attn_mask'] if aux_features else None,
         }
-
+        
         return mem_readout, aux_output
 
     def pixel_fusion(self,
@@ -152,8 +150,8 @@ class CUTIE(nn.Module):
                      last_mask: torch.Tensor,
                      *,
                      chunk_size: int = -1) -> torch.Tensor:
-        # last_mask = F.interpolate(last_mask, size=sensory.shape[-2:], mode='area')
-        last_mask = F.interpolate(last_mask, size=sensory.shape[-2:], mode='bilinear')
+        last_mask = F.interpolate(last_mask, size=sensory.shape[-2:], mode='area')
+        # last_mask = F.interpolate(last_mask, size=sensory.shape[-2:], mode='bilinear')
         last_others = self._get_others(last_mask)
         fused = self.pixel_fuser(pix_feat,
                                  pixel,
@@ -161,6 +159,9 @@ class CUTIE(nn.Module):
                                  last_mask,
                                  last_others,
                                  chunk_size=chunk_size)
+        # pix_feat_out = pix_feat.squeeze(0)
+        # pixel_out = pixel.squeeze(0)
+        # sensory_out = sensory.squeeze(0)
         return fused
 
     def readout_query(self,
@@ -205,11 +206,11 @@ class CUTIE(nn.Module):
         if selector is not None:
             prob = prob * selector
 
-        # 对所有对象进行softmax聚合，并上采样到原始分辨率
-        logits = aggregate(prob, dim=1)
-        logits = F.interpolate(logits, scale_factor=4, mode='bilinear', align_corners=False)
+        # Softmax over all objects[]
+        logits = aggregate(prob, dim=1)  # torch.Size([1, 2, 76, 120])
+        H, W = logits.shape[-2:]
+        logits = F.interpolate(logits, scale_factor=4, mode='bilinear', align_corners=False) # torch.Size([1, 2, 304, 480]) origin
         prob = F.softmax(logits, dim=1)
-
         return sensory, logits, prob
 
     def compute_aux(self, pix_feat: torch.Tensor, aux_inputs: Dict[str, torch.Tensor],
