@@ -174,8 +174,10 @@ def main():
         print(f'image id = {ti}')
         # load the image as RGB; normalization is done within the model
         image = Image.open(os.path.join(image_path, image_name))
+
         # image.save("/media/sti/B20F0FD71CF7DE70/FeishuDwonload/test_cutie/test_track_1/masks/image_resize_224_384.png")
         image = to_tensor(image).cuda().float()
+        
         image, mask = resize(image, mask, size=400)
         if ti == 0:
             # if mask is passed in, it is memorized
