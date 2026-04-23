@@ -1,44 +1,36 @@
 import logging
-from omegaconf import DictConfig
+# from omegaconf import DictConfig
 from typing import List, Dict
 import torch
-
+import numpy as np
+from horizon_tc_ui.hb_runtime import HBRuntime
 from cutie.inference.object_manager import ObjectManager
 from cutie.inference.kv_memory_store import KeyValueMemoryStore
-from cutie.model.cutie import CUTIE
 from cutie.model.utils.memory_utils import *
-
+from cutie.utils.inference import *
 log = logging.getLogger()
-
 
 class MemoryManager:
     """
     Manages all three memory stores and the transition between working/long-term memory
     """
-    def __init__(self, cfg: DictConfig, object_manager: ObjectManager):
+    def __init__(self, cfg, object_manager: ObjectManager):
         self.object_manager = object_manager
-        self.sensory_dim = cfg.model.sensory_dim
-        self.top_k = cfg.top_k
+        self.sensory_dim = cfg.sensory_dim
+        self.top_k = cfg.topk
         self.chunk_size = cfg.chunk_size
 
         self.save_aux = cfg.save_aux
 
-        self.use_long_term = cfg.use_long_term
+        self.use_long_term = False
         # print(cfg.use_long_term)
         # breakpoint()
-        self.count_long_term_usage = cfg.long_term.count_usage
+        self.count_long_term_usage = cfg.count_long_term_usage
         # subtract 1 because the first-frame is now counted as "permanent memory"
         # and is not counted towards max_mem_frames
         # but we want to keep the hyperparameters consistent as before for the same behavior
-        if self.use_long_term:
-            # 会比正常要长
-            self.max_mem_frames = cfg.long_term.max_mem_frames - 1
-            self.min_mem_frames = cfg.long_term.min_mem_frames - 1
-            self.num_prototypes = cfg.long_term.num_prototypes
-            self.max_long_tokens = cfg.long_term.max_num_tokens
-            self.buffer_tokens = cfg.long_term.buffer_tokens
-        else:
-            self.max_mem_frames = cfg.max_mem_frames - 1
+        
+        self.max_mem_frames = cfg.max_mem_frames - 1
 
         # dimensions will be inferred from input later
         self.CK = self.CV = None
@@ -59,23 +51,18 @@ class MemoryManager:
         self.config_stale = True
         self.engaged = False
 
-    def update_config(self, cfg: DictConfig) -> None:
+    def update_config(self, cfg) -> None:
         self.config_stale = True
-        self.top_k = cfg['top_k']
+        self.top_k = cfg.topk
 
         assert self.use_long_term == cfg.use_long_term, 'cannot update this'
-        assert self.count_long_term_usage == cfg.long_term.count_usage, 'cannot update this'
+        assert self.count_long_term_usage == cfg.count_usage, 'cannot update this'
 
-        self.use_long_term = cfg.use_long_term
-        self.count_long_term_usage = cfg.long_term.count_usage
-        if self.use_long_term:
-            self.max_mem_frames = cfg.long_term.max_mem_frames - 1
-            self.min_mem_frames = cfg.long_term.min_mem_frames - 1
-            self.num_prototypes = cfg.long_term.num_prototypes
-            self.max_long_tokens = cfg.long_term.max_num_tokens
-            self.buffer_tokens = cfg.long_term.buffer_tokens
-        else:
-            self.max_mem_frames = cfg.max_mem_frames - 1
+        self.use_long_term = False
+        self.count_long_term_usage = cfg.count_usage
+        
+       
+        self.max_mem_frames = cfg.max_mem_frames - 1
 
     def _readout(self, affinity, v) -> torch.Tensor:
         # affinity: bs*N*HW 
@@ -90,7 +77,7 @@ class MemoryManager:
             result = torch.bmm(v, affinity)
             # return v @ affinity
             
-            return result.cuda()
+            return result
         else:
             bs, num_objects, C, N = v.shape # torch.Size([1, 1, 256, 620])
             v = v.view(bs, num_objects * C, N) # torch.Size([1, 256, 620])
@@ -123,7 +110,7 @@ class MemoryManager:
         return value
 
     def read(self, pix_feat: torch.Tensor, query_key: torch.Tensor, selection: torch.Tensor,
-             last_mask: torch.Tensor, network: CUTIE) -> Dict[int, torch.Tensor]:
+             last_mask: torch.Tensor, current_ti:int) -> Dict[int, torch.Tensor]:
         """
         Read from all memory stores and returns a single memory readout tensor for each object
 
@@ -139,56 +126,57 @@ class MemoryManager:
         assert selection.shape[0] == bs
         assert last_mask.shape[0] == bs
 
-        query_key = query_key.flatten(start_dim=2)  # bs*C^k*HW
-        selection = selection.flatten(start_dim=2)  # bs*C^k*HW
+        # query_key = query_key.flatten(start_dim=2)  # bs*C^k*HW 为了onnx和hbm推理注释掉
+        # selection = selection.flatten(start_dim=2)  # bs*C^k*HW 为了onnx和hbm推理注释掉
         """
         Compute affinity and perform readout
         """
         all_readout_mem = {}
         buckets = self.work_mem.buckets #[0, [255]]
         for bucket_id, bucket in buckets.items():
-            if self.use_long_term and self.long_mem.engaged(bucket_id):
-                # Use long-term memory
-                # 使用长时记忆并且拥有长时记忆就将长时记忆和工作记忆中的信息拼接拼接
-                long_mem_size = self.long_mem.size(bucket_id)
-                memory_key = torch.cat([self.long_mem.key[bucket_id], self.work_mem.key[bucket_id]],
-                                       -1)
-                shrinkage = torch.cat(
-                    [self.long_mem.shrinkage[bucket_id], self.work_mem.shrinkage[bucket_id]], -1)
-                # 相似性度量并获取topk的注意力索引和总权重
-                # memory中每一帧的记忆都是一个B*1*H*W的key_value映射，即一个slot，一共有N帧所以有B*N*H*W，从这H个slot中选出topk个和当前目标query_key最相似的以及每个slot总的注意力权重
-                similarity = get_similarity(memory_key, shrinkage, query_key, selection)
-                affinity, usage = do_softmax(similarity,
-                                             top_k=self.top_k,
-                                             inplace=True,
-                                             return_usage=True)
-                """
-                Record memory usage for working and long-term memory
-                """
-                # ignore the index return for long-term memory
-                # 只记录work_memory的使用情况
-                work_usage = usage[:, long_mem_size:]
-                self.work_mem.update_bucket_usage(bucket_id, work_usage)
+            # if self.use_long_term and self.long_mem.engaged(bucket_id):
+            #     # Use long-term memory
+            #     # 使用长时记忆并且拥有长时记忆就将长时记忆和工作记忆中的信息拼接拼接
+            #     long_mem_size = self.long_mem.size(bucket_id)
+            #     memory_key = torch.cat([self.long_mem.key[bucket_id], self.work_mem.key[bucket_id]],
+            #                            -1)
+            #     shrinkage = torch.cat(
+            #         [self.long_mem.shrinkage[bucket_id], self.work_mem.shrinkage[bucket_id]], -1)
+            #     # 相似性度量并获取topk的注意力索引和总权重
+            #     # memory中每一帧的记忆都是一个B*1*H*W的key_value映射，即一个slot，一共有N帧所以有B*N*H*W，从这H个slot中选出topk个和当前目标query_key最相似的以及每个slot总的注意力权重
+            #     similarity = get_similarity(memory_key, shrinkage, query_key, selection)
+            #     affinity, usage = do_softmax(similarity,
+            #                                  top_k=self.top_k,
+            #                                  inplace=True,
+            #                                  return_usage=True)
+            #     """
+            #     Record memory usage for working and long-term memory
+            #     """
+            #     # ignore the index return for long-term memory
+            #     # 只记录work_memory的使用情况
+            #     work_usage = usage[:, long_mem_size:]
+            #     self.work_mem.update_bucket_usage(bucket_id, work_usage)
 
-                if self.count_long_term_usage:
-                    # ignore the index return for working memory
-                    long_usage = usage[:, :long_mem_size]
-                    self.long_mem.update_bucket_usage(bucket_id, long_usage)
-            else:
+            #     if self.count_long_term_usage:
+            #         # ignore the index return for working memory
+            #         long_usage = usage[:, :long_mem_size]
+            #         self.long_mem.update_bucket_usage(bucket_id, long_usage)
+            # else:
                 # no long-term memory
-                memory_key = self.work_mem.key[bucket_id] # [1, 64, 2280]
-                shrinkage = self.work_mem.shrinkage[bucket_id] # [1, 1, 2280]
+            memory_key = self.work_mem.key[bucket_id] # [1, 64, 2280]
+            shrinkage = self.work_mem.shrinkage[bucket_id] # [1, 1, 2280]
                 # 输出的是历史中每个记忆空间和当前的相似度相似度即1*1620*memory_frame*1620
-                similarity = get_similarity(memory_key, shrinkage, query_key, selection)
 
-                if self.use_long_term:
-                    affinity, usage = do_softmax(similarity,
-                                                 top_k=self.top_k,
-                                                 inplace=False,
-                                                 return_usage=True)
-                    self.work_mem.update_bucket_usage(bucket_id, usage)
-                else:
-                    affinity = do_softmax(similarity, top_k=self.top_k, inplace=True)
+                # similarity = get_similarity(memory_key, shrinkage, query_key, selection)
+
+                # if self.use_long_term:
+                #     affinity, usage = do_softmax(similarity,
+                #                                  top_k=self.top_k,
+                #                                  inplace=False,
+                #                                  return_usage=True)
+                #     self.work_mem.update_bucket_usage(bucket_id, usage)
+                # else:
+                #     affinity = do_softmax(similarity, top_k=self.top_k, inplace=True)
             
            
             # 分片是为了加速并行
@@ -198,35 +186,82 @@ class MemoryManager:
                 object_chunks = [
                     bucket[i:i + self.chunk_size] for i in range(0, len(bucket), self.chunk_size)
                 ]
+            
             # 融合sensormemory,历史mask，work_memory视觉特征（slot中的value），object_memory等，并通过transformer进行融合
             # 多目标同时进行
             for objects in object_chunks:
                 this_sensory = self._get_sensory_by_ids(objects)
+                # print(f'sensory={this_sensory.min()}  ')
                 # 获取当前目标历史mask
                 this_last_mask = self._get_mask_by_ids(last_mask, objects)
+                # print(f'last_mask={this_last_mask.min()}  ')
                 this_msk_value = self._get_visual_values_by_ids(objects)  # (1/2)*num_objects*C*N
                 # 利用注意力机制从所有存储中对value进行加权计算，输出1*2*256*特征图宽高 msk_value和拼接次数有关，但这里输出无关
-                visual_readout = self._readout(affinity,
-                                               this_msk_value).view(bs, len(objects), self.CV, h, w)
+
+                
+                # visual_readout = self._readout(affinity,
+                #                                this_msk_value).view(bs, len(objects), self.CV, h, w)
+                # print(f'visual_readout={visual_readout.min()}  ')
                 # 聚合信息尺度不变
-                pixel_readout = network.pixel_fusion(pix_feat, visual_readout, this_sensory,
-                                                     this_last_mask)
+                # pixel_readout = network.pixel_fusion(pix_feat, visual_readout, this_sensory,
+                #                                      this_last_mask)
+                # print(f'pixel_readout={pixel_readout.min()}  ')
                 this_obj_mem = self._get_object_mem_by_ids(objects)
+                this_obj_mem = this_obj_mem / this_obj_mem.abs().max() # this code line is added for s100 quantization 
+                # print(f'this_obj_mem={this_obj_mem.min()}  ')
                 this_obj_mem = this_obj_mem.unsqueeze(2) if this_obj_mem is not None else None
-                readout_memory, aux_features = network.readout_query(pixel_readout, this_obj_mem)
+
+                # readout_memory, aux_features = network.readout_query(pixel_readout, this_obj_mem)
+                mem_len = 3900
+                current_mem_len = memory_key.shape[-1]
+                repeat_len = int((mem_len - current_mem_len) / 975 ) 
+                mem_key = torch.cat((memory_key.unsqueeze(0), torch.zeros((1,1, 64, repeat_len*975), dtype=torch.float)), dim=3)
+                mem_shrinkage = torch.cat((shrinkage.unsqueeze(0), torch.zeros((1,1, 1, repeat_len*975), dtype=torch.float)), dim=3)
+                mem_value = torch.cat((this_msk_value, torch.zeros((1,1, 256, repeat_len*975), dtype=torch.float)), dim=3)
+                sensory = this_sensory.squeeze(0)
+                obj_mem = this_obj_mem.squeeze(0)
+                readout_memory_input = {'pix_feat':pix_feat, 'key': query_key, 'selection':selection, 'last_mask':this_last_mask, 'mem_key':mem_key,
+                                       'mem_shrinkage': mem_shrinkage, 'mem_value':mem_value, 'sensory':sensory, 'obj_mem':obj_mem}
+                # print(repeat_len)
+                # if repeat_len == 0:
+                #     np.save("moka/cutie_debug/pix_feat.npy",pix_feat.clone().numpy())
+                #     np.save("moka/cutie_debug/key.npy",query_key.clone().numpy())
+                #     np.save("moka/cutie_debug/selection.npy",selection.clone().numpy())
+                #     np.save("moka/cutie_debug/last_mask.npy",this_last_mask.clone().numpy())
+                #     np.save("moka/cutie_debug/mem_key.npy",mem_key.clone().numpy())
+                #     np.save("moka/cutie_debug/mem_shrinkage.npy",mem_shrinkage.clone().numpy())
+                #     np.save("moka/cutie_debug/mem_value.npy",mem_value.clone().numpy())
+                #     np.save("moka/cutie_debug/sensory.npy",sensory.clone().numpy())
+                #     np.save("moka/cutie_debug/obj_mem.npy",obj_mem.clone().numpy())
+                #     exit()
+                # readout_memory, usage = onnx_infer(readout_memory_input, model_name="readout_memory")
+                readout_memory, usage = hbm_infer(readout_memory_input, model_name="readout_memory")
+                
+                # save2txt(tensor=readout_memory, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/readout_memory", name=f"readout_memory_{current_ti}.txt")
+                # save2txt(tensor=usage, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/usage", name=f"usage_{current_ti}.txt")
+                # save2txt(tensor=pix_feat, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/pix_feat", name=f"pix_feat_{current_ti}.txt")
+                # save2txt(tensor=query_key, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/key", name=f"key_{current_ti}.txt")
+                # save2txt(tensor=selection, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/selection", name=f"selection_{current_ti}.txt")
+                # save2txt(tensor=this_last_mask, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/last_mask", name=f"last_mask_{current_ti}.txt")
+                # save2txt(tensor=mem_key, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/mem_key", name=f"mem_key_{current_ti}.txt")
+                # save2txt(tensor=mem_shrinkage, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/mem_shrinkage", name=f"mem_shrinkage_{current_ti}.txt")
+                # save2txt(tensor=mem_value, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/mem_value", name=f"mem_value_{current_ti}.txt")
+                # save2txt(tensor=sensory, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/sensory", name=f"sensory_{current_ti}.txt")
+                # save2txt(tensor=obj_mem, save_root="/open_explorer/moka/cutie_onnx_400_624/inference_debug/readout_memory/obj_mem", name=f"obj_mem_{current_ti}.txt")
+
                 for i, obj in enumerate(objects):
                     all_readout_mem[obj] = readout_memory[:, i]
 
-                if self.save_aux:
-                    aux_output = {
-                        'sensory': this_sensory,
-                        'pixel_readout': pixel_readout,
-                        'q_logits': aux_features['logits'] if aux_features else None,
-                        'q_weights': aux_features['q_weights'] if aux_features else None,
-                        'p_weights': aux_features['p_weights'] if aux_features else None,
-                        'attn_mask': aux_features['attn_mask'].float() if aux_features else None,
-                    }
-                    self.aux = aux_output
+                # if self.save_aux:
+                #     aux_output = {
+                #         'sensory': this_sensory,
+                #         'pixel_readout': pixel_readout,
+                #         'q_logits': aux_features['logits'] if aux_features else None,
+                #         'q_weights': aux_features['q_weights'] if aux_features else None,
+                #         'p_weights': aux_features['p_weights'] if aux_features else None,
+                #         'attn_mask': aux_features['attn_mask'].float() if aux_features else None,
+                #     }
+                #     self.aux = aux_output
 
         return all_readout_mem
 
@@ -299,6 +334,7 @@ class MemoryManager:
                     self.obj_v[obj][:, :, -1] = new_acc
                 else:
                     self.obj_v[obj] = obj_value[:, obj_id]
+                
 
         # convert mask value tensor into a dict for insertion
         msk_values = {obj: msk_value[:, obj_id] for obj_id, obj in enumerate(objects)}
@@ -309,92 +345,78 @@ class MemoryManager:
                           as_permanent=as_permanent)
 
         for bucket_id in self.work_mem.buckets.keys():
-            # long-term memory cleanup
-            if self.use_long_term:
-                # Do memory compressed if needed
-                if self.work_mem.non_perm_size(bucket_id) >= self.max_work_tokens:
-                    # Remove obsolete features if needed
-                    if self.long_mem.non_perm_size(bucket_id) >= (self.max_long_tokens -
-                                                                  self.num_prototypes):
-                        self.long_mem.remove_obsolete_features(
-                            bucket_id,
-                            self.max_long_tokens - self.num_prototypes - self.buffer_tokens)
-
-                    self.compress_features(bucket_id)
-            else:
-                # FIFO
-                self.work_mem.remove_old_memory(bucket_id, self.max_work_tokens)
+            
+            self.work_mem.remove_old_memory(bucket_id, self.max_work_tokens)
 
     def purge_except(self, obj_keep_idx: List[int]) -> None:
         # purge certain objects from the memory except the one listed
         self.work_mem.purge_except(obj_keep_idx)
-        if self.use_long_term and self.long_mem.engaged():
-            self.long_mem.purge_except(obj_keep_idx)
         self.sensory = {k: v for k, v in self.sensory.items() if k in obj_keep_idx}
 
         if not self.work_mem.engaged():
             # everything is removed!
             self.engaged = False
 
-    def compress_features(self, bucket_id: int) -> None:
-        HW = self.HW
+    # def compress_features(self, bucket_id: int) -> None:
+    #     HW = self.HW
 
-        # perform memory consolidation
-        prototype_key, prototype_value, prototype_shrinkage = self.consolidation(
-            *self.work_mem.get_all_sliced(bucket_id, 0, -self.min_work_tokens))
+    #     # perform memory consolidation
+    #     prototype_key, prototype_value, prototype_shrinkage = self.consolidation(
+    #         *self.work_mem.get_all_sliced(bucket_id, 0, -self.min_work_tokens))
 
-        # remove consolidated working memory
-        # 删除以后剩下min_work_tokes+1680
-        self.work_mem.sieve_by_range(bucket_id,
-                                     0,
-                                     -self.min_work_tokens,
-                                     min_size=self.min_work_tokens)
+    #     # remove consolidated working memory
+    #     # 删除以后剩下min_work_tokes+1680
+    #     self.work_mem.sieve_by_range(bucket_id,
+    #                                  0,
+    #                                  -self.min_work_tokens,
+    #                                  min_size=self.min_work_tokens)
 
-        # add to long-term memory
-        self.long_mem.add(prototype_key,
-                          prototype_value,
-                          prototype_shrinkage,
-                          selection=None,
-                          supposed_bucket_id=bucket_id)
+    #     # add to long-term memory
+    #     self.long_mem.add(prototype_key,
+    #                       prototype_value,
+    #                       prototype_shrinkage,
+    #                       selection=None,
+    #                       supposed_bucket_id=bucket_id)
 
-    def consolidation(self, candidate_key: torch.Tensor, candidate_shrinkage: torch.Tensor,
-                      candidate_selection: torch.Tensor, candidate_value: Dict[int, torch.Tensor],
-                      usage: torch.Tensor) -> (torch.Tensor, Dict[int, torch.Tensor], torch.Tensor):
-        # find the indices with max usage
-        bs = candidate_key.shape[0]
-        assert bs in [1, 2]
+    # def consolidation(self, candidate_key: torch.Tensor, candidate_shrinkage: torch.Tensor,
+    #                   candidate_selection: torch.Tensor, candidate_value: Dict[int, torch.Tensor],
+    #                   usage: torch.Tensor) -> (torch.Tensor, Dict[int, torch.Tensor], torch.Tensor):
+    #     # find the indices with max usage
+    #     bs = candidate_key.shape[0]
+    #     assert bs in [1, 2]
 
-        prototype_key = []
-        prototype_selection = []
-        for bi in range(bs):
-            _, max_usage_indices = torch.topk(usage[bi], k=self.num_prototypes, dim=-1, sorted=True)
-            prototype_indices = max_usage_indices.flatten()
-            prototype_key.append(candidate_key[bi, :, prototype_indices])
-            prototype_selection.append(candidate_selection[bi, :, prototype_indices])
-        prototype_key = torch.stack(prototype_key, dim=0)
-        prototype_selection = torch.stack(prototype_selection, dim=0)
-        """
-        Potentiation step
-        """
-        similarity = get_similarity(candidate_key, candidate_shrinkage, prototype_key,
-                                    prototype_selection)
-        affinity = do_softmax(similarity)
+    #     prototype_key = []
+    #     prototype_selection = []
+    #     for bi in range(bs):
+    #         _, max_usage_indices = torch.topk(usage[bi], k=self.num_prototypes, dim=-1, sorted=True)
+    #         prototype_indices = max_usage_indices.flatten()
+    #         prototype_key.append(candidate_key[bi, :, prototype_indices])
+    #         prototype_selection.append(candidate_selection[bi, :, prototype_indices])
+    #     prototype_key = torch.stack(prototype_key, dim=0)
+    #     prototype_selection = torch.stack(prototype_selection, dim=0)
+    #     """
+    #     Potentiation step
+    #     """
+    #     similarity = get_similarity(candidate_key, candidate_shrinkage, prototype_key,
+    #                                 prototype_selection)
+    #     affinity = do_softmax(similarity)
 
-        # readout the values
-        prototype_value = {k: self._readout(affinity, v) for k, v in candidate_value.items()}
+    #     # readout the values
+    #     prototype_value = {k: self._readout(affinity, v) for k, v in candidate_value.items()}
 
-        # readout the shrinkage term
-        prototype_shrinkage = self._readout(affinity, candidate_shrinkage)
+    #     # readout the shrinkage term
+    #     prototype_shrinkage = self._readout(affinity, candidate_shrinkage)
 
-        return prototype_key, prototype_value, prototype_shrinkage
+    #     return prototype_key, prototype_value, prototype_shrinkage
 
     def initialize_sensory_if_needed(self, sample_key: torch.Tensor, ids: List[int]):
         for obj in ids:
             if obj not in self.sensory:
                 # also initializes the sensory memory
                 bs, _, h, w = sample_key.shape
-                self.sensory[obj] = torch.zeros((bs, self.sensory_dim, h, w),
-                                                device=sample_key.device)
+                self.sensory[obj] = torch.zeros((bs, self.sensory_dim, h, w))
+                # self.sensory[obj] = torch.zeros((bs, self.sensory_dim, h, w),
+                #                                 device=sample_key.device)
 
     def update_sensory(self, sensory: torch.Tensor, ids: List[int]):
         # sensory: 1*num_objects*C*H*W

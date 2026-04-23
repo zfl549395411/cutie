@@ -61,7 +61,7 @@ def do_softmax(
         # values, indices = torch.topk(similarity, k=top_k, dim=1)
         affinity = similarity.exp_()
         affinity /= torch.sum(affinity, dim=1, keepdim=True) 
-        # # print(affinity.shape)
+        
 
         # x_exp = values.exp_()
         # x_exp /= torch.sum(x_exp, dim=1, keepdim=True)

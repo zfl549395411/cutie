@@ -116,7 +116,6 @@ class QueryTransformer(nn.Module):
                 obj_summaries: torch.Tensor,
                 selector: Optional[torch.Tensor] = None,
                 need_weights: bool = False) -> (torch.Tensor, Dict[str, torch.Tensor]):
-
         # pixel: B*num_objects*embed_dim*H*W
         # obj_summaries: B*num_objects*T*num_queries*embed_dim
         T = obj_summaries.shape[2]

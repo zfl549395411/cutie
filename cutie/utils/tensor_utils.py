@@ -54,8 +54,8 @@ def aggregate(prob: torch.Tensor, dim: int) -> torch.Tensor:
     with torch.cuda.amp.autocast(enabled=False):
         prob = prob.float()
         new_prob = torch.cat([prod(1 - prob, dim=dim, keepdim=True), prob],
-                             dim).clamp(1e-7, 1 - 1e-7) # this operater is not suporrted by rk3588
-        logits = torch.log((new_prob / (1 - new_prob)))
+                             dim).clamp(1e-7, 1 - 1e-7) # prod operater is modified for rk3588
+        logits = torch.log((new_prob / (1 - new_prob))) # 增强特征显著性
         return logits
 # # @torch.jit.script
 # def aggregate(prob: torch.Tensor, dim: int) -> torch.Tensor:

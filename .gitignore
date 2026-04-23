@@ -15,6 +15,8 @@ python_test
 python_test/
 onnx
 onnx/
+onnx_s100
+onnx_s100/
 wrapper_old.py
 test.py
 traced_graph.txt

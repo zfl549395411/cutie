@@ -1,7 +1,7 @@
 from typing import List, Optional, Iterable, Dict
 import logging
 from omegaconf import DictConfig
-
+import cv2
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -103,6 +103,11 @@ class InferenceCore:
 
         # 每个目标有一个短期的记忆，初始化为0，1*256*H*W
         self.memory.initialize_sensory_if_needed(key, self.object_manager.all_obj_ids)
+        # if(self.curr_ti<801):
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/encode_mask/image/encode_mask_image_{self.curr_ti}', image.clone().cpu().numpy())
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/encode_mask/pix_feat/encode_mask_pix_feat_{self.curr_ti}', pix_feat.clone().cpu().numpy())
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/encode_mask/sensory/encode_mask_sensory_{self.curr_ti}', self.memory.get_sensory(self.object_manager.all_obj_ids).clone().cpu().numpy())
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/encode_mask/prob/encode_mask_prob_{self.curr_ti}',prob.clone().cpu().numpy())
         msk_value, sensory, obj_value, _ = self.network.encode_mask(
             image,
             pix_feat,
@@ -151,9 +156,9 @@ class InferenceCore:
             return torch.zeros((1, key.shape[-2] * 16, key.shape[-1] * 16),
                                device=key.device,
                                dtype=key.dtype)
-        # 根据相似性加权融合历史work_memory视觉特征并利用transfoer将object_memory和object_memory深度融合
+        # 根据相似性加权融合历史work_memory视觉特征并利用transformer将object_memory和object_memory深度融合
         # 每个目标都输出自己的memroy_readout，输出是1*256*H*W，其实就是聚合后的特征
-        memory_readout = self.memory.read(pix_feat, key, selection, self.last_mask, self.network)
+        memory_readout = self.memory.read(pix_feat, key, selection, self.last_mask, self.network, current_ti=self.curr_ti)
         memory_readout = self.object_manager.realize_dict(memory_readout) # 单目标先不导出
         # 网络输出每个目标的sensory 1*num_object*256*H*W,加背景的概率1*num_object+1*H*W
         sensory, _, pred_prob_with_bg = self.network.segment(ms_features,
@@ -161,7 +166,8 @@ class InferenceCore:
                                                              self.memory.get_sensory(
                                                                  self.object_manager.all_obj_ids),
                                                              chunk_size=self.chunk_size,
-                                                             update_sensory=update_sensory)
+                                                             update_sensory=update_sensory,
+                                                             current_ti = self.curr_ti)
         # remove batch dim
         if self.flip_aug:
             # average predictions of the non-flipped and flipped version
@@ -243,37 +249,40 @@ class InferenceCore:
             image = torch.cat([image, torch.flip(image, dims=[-1])], dim=0)
 
         # whether to update the working memory
-        # 如果有mask强制更新，否则5帧强制更新一次
+        # 如果有mask强制更新，否则cfg.mem_every帧强制更新一次
         is_mem_frame = ((self.curr_ti - self.last_mem_ti >= self.mem_every) or
                         (mask is not None)) and (not end) #初始帧的结果需要保存下来
         
         # segment when there is no input mask or when the input mask is incomplete
         # 如果无mask输入或者存在新的object时触发完整分割
         need_segment = (mask is None) or (self.object_manager.num_obj > 0
-                                          and not self.object_manager.has_all(objects))
+                                          and not self.object_manager.has_all(objects)) # 除了第一帧，每帧都分割
         # sensor memory更新节奏，与完整的memory(long memory和pixel memory)分开，避免冲高
-        update_sensory = ((self.curr_ti - self.last_mem_ti) in self.stagger_ti) and (not end)
-       
-        # breakpoint()
+        update_sensory = ((self.curr_ti - self.last_mem_ti) in self.stagger_ti) and (not end) # 除了第一帧，每帧都更新
+        # if (self.curr_ti < 200):
+        #     np.save(f"/media/sti/B20F0FD71CF7DE70/cutie/calib_data/image_encoder/image_encoder_image_{self.curr_ti}", image.clone().cpu().numpy())
+
         # encoding the image
         # 全量特征图 全局pix特征
         # 输入为1*3*H*W，输出图像编码的三种下采样特征ms_feat为1*(64*n)*(H/n)*(W/n),n为4 8 16，再对f16卷积通道下采样到指定256
-        ms_feat, pix_feat = self.image_feature_store.get_features(self.curr_ti, image) # ms_feat.shape=([1, 256, 20, 31],[1, 128, 40, 62],[1, 64, 80, 124]) pix_feat.shape=[1, 256, 20, 31]
+        onnx_infer(image_encoder)
+        # ms_feat, pix_feat, key, shrinkage, selection = self.image_feature_store.get_features(self.curr_ti, image) # ms_feat.shape=([1, 256, 20, 31],[1, 128, 40, 62],[1, 64, 80, 124]) pix_feat.shape=[1, 256, 20, 31]
         # 注意力机制相关特征 来自于f16用于相似性度量的key 用于削减注意力峰值的shrinkage 用于低响应mask的selection
         # key: 1*64*(H/16)*(W/16), shrinkage：拍平了 所以是1*1*(H/16)*(W/16)，selection：每个特征值的mask,1*64*(H/16)*(W/16)
         # key也是一个全局特征,所以注意力实际上是查询的需要关注的空间
-        key, shrinkage, selection = self.image_feature_store.get_key(self.curr_ti, image) # key.shape=[1, 64, 20, 31]  shrinkage.shape=[1, 1, 20, 31] selection.shape=[1, 64, 20, 31]  
+        # key, shrinkage, selection = self.image_feature_store.get_key(self.curr_ti, image) # key.shape=[1, 64, 20, 31]  shrinkage.shape=[1, 1, 20, 31] selection.shape=[1, 64, 20, 31]  
        
 
         # segmentation from memory if needed
         if need_segment:
+           # 第一帧不需要分割，因为传入了mask
             pred_prob_with_bg = self._segment(key,
                                               selection,
                                               pix_feat,
                                               ms_feat,
                                               update_sensory=update_sensory)
 
-        # use the input mask if provided
+        # use the input mask if provided and then this if-else will not execute
         if mask is not None:
             # inform the manager of the new objects, and get a list of temporary id
             # temporary ids -- indicates the position of objects in the tensor
@@ -304,6 +313,7 @@ class InferenceCore:
                 # new_masks are always in the order of tmp_id
                 mask = torch.cat([pred_prob_no_bg, *new_masks], dim=0)
             elif idx_mask:
+                # objects = [255]
                 # simply convert cls to one-hot representation
                 if len(objects) == 0:
                     if delete_buffer:
@@ -316,12 +326,16 @@ class InferenceCore:
                 mask = torch.stack(
                     [mask == objects[mask_id] for mask_id, _ in enumerate(corresponding_tmp_ids)],
                     dim=0)
+    
             # 将所有通道不是
             # 通过这个之后增加一个通道，第一个通道是背景概率，其他通道是对应object的概率（所以需要temp_id，必须按顺序）
-            pred_prob_with_bg = aggregate(mask, dim=0)
-            pred_prob_with_bg = torch.softmax(pred_prob_with_bg, dim=0)
+            pred_prob_with_bg = aggregate(mask, dim=0) # 初始化需要完成的操作
+            pred_prob_with_bg = torch.softmax(pred_prob_with_bg, dim=0) # 初始化需要完成的操作
+                  
+            # self.last_mask = mask.float().unsqueeze(0) # 端侧部署时可设置last_mask直接等于mask，不影响结果
+
         # 去除前景通道概率
-        self.last_mask = pred_prob_with_bg[1:].unsqueeze(0)
+        self.last_mask = pred_prob_with_bg[1:].unsqueeze(0) # 都是接近1的数和靠近0的数
         if self.flip_aug:
             self.last_mask = torch.cat(
                 [self.last_mask, torch.flip(self.last_mask, dims=[-1])], dim=0)
@@ -337,7 +351,6 @@ class InferenceCore:
                              force_permanent=force_permanent)
         if delete_buffer:
             self.image_feature_store.delete(self.curr_ti) # delete_buffer 删除当前帧的图像
-
         output_prob = unpad(pred_prob_with_bg, self.pad)
         if resize_needed:
             # restore output to the original size
@@ -356,11 +369,10 @@ class InferenceCore:
         self.memory.purge_except(self.object_manager.all_obj_ids)
 
     def output_prob_to_mask(self, output_prob: torch.Tensor) -> torch.Tensor:
-        mask = torch.argmax(output_prob, dim=0)
-
+        mask = torch.argmax(output_prob, dim=0) # [H, W]
+        # mask = output_prob[:1].squeeze(0)
         # index in tensor != object id -- remap the ids here
         new_mask = torch.zeros_like(mask)
         for tmp_id, obj in self.object_manager.tmp_id_to_obj.items():
             new_mask[mask == tmp_id] = obj.id
-
         return new_mask

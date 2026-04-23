@@ -1,9 +1,8 @@
 from typing import List, Dict
 import logging
-from omegaconf import DictConfig
 import torch
 import torch.nn as nn
-
+import numpy as np
 from cutie.model.modules import *
 from cutie.model.big_modules import *
 from cutie.model.aux_modules import AuxComputer
@@ -184,7 +183,8 @@ class CUTIE(nn.Module):
                 *,
                 selector: bool = None,
                 chunk_size: int = -1,
-                update_sensory: bool = True) -> (torch.Tensor, torch.Tensor, torch.Tensor):
+                update_sensory: bool = True,
+                current_ti:int) -> (torch.Tensor, torch.Tensor, torch.Tensor):
         """
         multi_scale_features is from the key encoder for skip-connection
         memory_readout is from working/long-term memory
@@ -193,11 +193,20 @@ class CUTIE(nn.Module):
         selector is 1 if an object exists, and 0 otherwise. We use it to filter padded objects
             during training.
         """
+        # if (current_ti<201):
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/segment/f8/segment_f8_{current_ti}.npy', ms_image_feat[1].clone().cpu().numpy())
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/segment/f4/segment_f4_{current_ti}.npy', ms_image_feat[2].clone().cpu().numpy())
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/segment/memory_readout/segment_memory_readout_{current_ti}.npy', memory_readout.clone().cpu().numpy())
+        #     np.save(f'/media/sti/B20F0FD71CF7DE70/cutie/calib_data/segment/sensory/segment_sensory_{current_ti}.npy', sensory.clone().cpu().numpy())
         sensory, logits = self.mask_decoder(ms_image_feat,
                                             memory_readout,
                                             sensory,
                                             chunk_size=chunk_size,
                                             update_sensory=update_sensory)
+        # fake quant for logits
+        # scale = 2*logits.abs().max()/255
+        # logits_q = (logits / scale).round().clamp(-127,127)
+        # logits = logits_q*scale
 
         prob = torch.sigmoid(logits)
         if selector is not None:
@@ -208,6 +217,10 @@ class CUTIE(nn.Module):
         H, W = logits.shape[-2:]
         logits = F.interpolate(logits, scale_factor=4, mode='bilinear', align_corners=False) # torch.Size([1, 2, 304, 480]) origin
         prob = F.softmax(logits, dim=1)
+        # fake quant for prob
+        # scale = 2*prob.abs().max()/65535
+        # prob_q = (prob / scale).round().clamp(-32767,32767)
+        # prob = prob_q*scale
         return sensory, logits, prob
 
     def compute_aux(self, pix_feat: torch.Tensor, aux_inputs: Dict[str, torch.Tensor],
